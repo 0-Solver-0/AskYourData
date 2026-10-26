@@ -1,0 +1,67 @@
+version: "3.9"
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  Odoo 18 Community + PostgreSQL 16
+#  Fichier indépendant — lancer avant docker-compose.yml
+#  Commande : docker compose -f docker-compose.odoo.yml up -d
+# ══════════════════════════════════════════════════════════════════════════════
+
+services:
+
+  postgres_odoo:
+    image: postgres:16-alpine
+    container_name: odoo_postgres
+    restart: unless-stopped
+    environment:
+      PGDATA:            /var/lib/postgresql/data/pgdata
+    volumes:
+      - postgres_odoo_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U odoo -d odoo"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - nl2sql_net
+
+  odoo:
+    image: odoo:18.0
+    container_name: odoo_app
+    restart: unless-stopped
+    depends_on:
+      postgres_odoo:
+        condition: service_healthy
+    ports:
+      - "8069:8069"
+      - "8072:8072"
+    environment:
+      HOST:     postgres_odoo
+      PORT:     5432
+      USER:     odoo
+      PASSWORD: ${ODOO_DB_PASSWORD:-odoo}
+    volumes:
+      - odoo_data:/var/lib/odoo
+      - ./odoo/addons:/mnt/extra-addons
+      - ./odoo/config:/etc/odoo
+    networks:
+      - nl2sql_net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8069/web/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+volumes:
+  postgres_odoo_data:
+    name: odoo_postgres_data
+  odoo_data:
+    name: odoo_app_data
+
+networks:
+  nl2sql_net:
+    name: nl2sql_net
+    driver: bridge

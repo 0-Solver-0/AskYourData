@@ -1,0 +1,57 @@
+# ══════════════════════════════════════════════════════════════════════════════
+#  NL2SQL — Dockerfile.cpu
+#  Utilisé par : schema_service (all-MiniLM) + api_service (Flask)
+#
+#  Image légère Python 3.11 slim — pas de CUDA, pas de PyTorch
+#  Rebuild rapide (~45s) pour les changements de code métier
+# ══════════════════════════════════════════════════════════════════════════════
+
+FROM python:3.11-slim AS base
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        curl \
+        libgomp1 \
+        libpq-dev \
+        gcc \
+        postgresql-client \ 
+    && rm -rf /var/lib/apt/lists/*
+
+# ── Dépendances Python ────────────────────────────────────────────────────────
+FROM base AS deps
+
+WORKDIR /deps
+
+RUN pip install --upgrade pip && pip install \
+        flask==3.0.3 \
+        gunicorn==22.0.0 \
+        requests==2.32.3 \
+        python-dotenv==1.0.1 \
+        sentence-transformers==3.0.1 \
+        psycopg2-binary==2.9.9 \
+        pgvector==0.3.2
+
+# ── Image finale ───────────────────────────────────────────────────────────────
+FROM base AS final
+
+COPY --from=deps /usr/local/lib/python3.11/site-packages \
+                 /usr/local/lib/python3.11/site-packages
+COPY --from=deps /usr/local/bin /usr/local/bin
+
+WORKDIR /app
+
+COPY schema_service/ ./schema_service/
+COPY api_service/    ./api_service/
+
+ENV PYTHONPATH=/app \
+    OMP_NUM_THREADS=8 \
+    TOKENIZERS_PARALLELISM=false \
+    CUDA_VISIBLE_DEVICES=""
+
+EXPOSE 8002 5000
+
+CMD ["python3", "-c", "print('Specify command via docker-compose')"]
