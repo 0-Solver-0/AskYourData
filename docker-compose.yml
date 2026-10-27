@@ -76,8 +76,11 @@ services:
       SOURCE_DB_USER:      ${SOURCE_DB_USER:-odoo}
       SOURCE_DB_SCHEMA:    ${SOURCE_DB_SCHEMA:-public}
       SOURCE_DB_PASSWORD:  ${ODOO_DB_PASSWORD:-odoo}
-      TOP_K_TABLES:        "10"
-      TOP_K_COLUMNS:       "20"
+      SEARCH_SYNONYMS_PATH: /app/config/search_synonyms.yaml
+      SEARCH_SEED_TABLES:  "5"
+      SEARCH_MAX_TABLES:   "10"
+      SEARCH_MAX_COLUMNS:  "15"
+      SCHEMA_TOKEN_BUDGET: "3000"
       OMP_NUM_THREADS:     "8"
       TOKENIZERS_PARALLELISM: "false"
       CUDA_VISIBLE_DEVICES: ""

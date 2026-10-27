@@ -1,0 +1,45 @@
+# ══════════════════════════════════════════════════════════════════════════════
+#  AskYourData — vocabulaire métier pour la recherche de tables (Odoo)
+#  Un terme de la question (à gauche) ajoute des termes de recherche (à droite).
+#  Sert à la correspondance de mots et enrichit le texte encodé de la question.
+#  Monté dans schema_service : modifiable sans reconstruire l'image (aucune
+#  réindexation nécessaire). Garder la liste courte et générique : les
+#  descriptions précises des tables viendront de l'enrichissement (rôle PREP).
+#  Éviter les termes trop génériques à droite (ex. « order » relierait ventes et achats).
+# ══════════════════════════════════════════════════════════════════════════════
+
+customer:     [partner, client, contact]
+client:       [partner, customer]
+supplier:     [vendor, partner, purchase]
+vendor:       [supplier, partner, purchase]
+contact:      [partner]
+revenue:      [sale, amount, total, invoiced, untaxed]
+turnover:     [revenue, sale, amount, total]
+sales:        [sale, revenue]
+sold:         [sale, quantity]
+quotation:    [sale, order, draft]
+invoice:      [move, journal entry, bill, invoiced]
+invoiced:     [invoice, move]
+bill:         [move, vendor, invoice]
+unpaid:       [due, residual, payment, state, not paid]
+paid:         [payment, state]
+payment:      [paid, payment state]
+salesperson:  [user, salesman, seller]
+seller:       [user, salesperson]
+employee:     [hr, staff, department]
+headcount:    [employee, count]
+department:   [hr, employee]
+product:      [product, template, variant]
+stock:        [quant, quantity, on hand, inventory, warehouse]
+inventory:    [stock, quant, quantity]
+delivery:     [picking, transfer, stock]
+receipt:      [picking, transfer, stock, incoming]
+warehouse:    [stock, location]
+opportunity:  [lead, crm, pipeline]
+lead:         [crm, opportunity, pipeline]
+pipeline:     [crm, lead, opportunity, stage]
+deal:         [lead, opportunity, crm]
+won:          [lead, stage, probability]
+lost:         [lead, lost reason]
+country:      [country, state]
+purchase:     [purchase, vendor, supplier]

@@ -1,0 +1,43 @@
+# ══════════════════════════════════════════════════════════════════════════════
+#  Questions de contrôle de la recherche de schéma (incrément 3)
+#  expected : tables qui DOIVENT être envoyées au modèle SQL.
+#    - un nom  : table obligatoire
+#    - une liste : au moins une des tables (alternatives équivalentes)
+#  Lancer : python benchmark/schema_search_eval.py  (API sur http://localhost:5000)
+# ══════════════════════════════════════════════════════════════════════════════
+
+- question: "Top 5 customers by revenue"
+  expected: [[sale_order, account_move], res_partner]
+
+- question: "Customers with the highest unpaid invoice amount, by salesperson"
+  expected: [account_move, res_partner, res_users]
+
+- question: "Monthly invoiced revenue in 2025"
+  expected: [account_move]
+
+- question: "Expected revenue in the CRM pipeline by stage"
+  expected: [crm_lead, crm_stage]
+
+- question: "Opportunities won this quarter by salesperson"
+  expected: [crm_lead, res_users]
+
+- question: "Top lost reasons this year"
+  expected: [crm_lead, crm_lost_reason]
+
+- question: "Products with less than 10 units in stock"
+  expected: [stock_quant, [product_product, product_template]]
+
+- question: "Deliveries pending this week"
+  expected: [stock_picking]
+
+- question: "Top suppliers by purchase amount"
+  expected: [purchase_order, res_partner]
+
+- question: "Headcount per department"
+  expected: [hr_employee, hr_department]
+
+- question: "Best selling products by quantity"
+  expected: [sale_order_line, [product_product, product_template]]
+
+- question: "How many customers do we have in Morocco?"
+  expected: [res_partner, res_country]
