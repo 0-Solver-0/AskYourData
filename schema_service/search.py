@@ -147,13 +147,25 @@ def table_core_tokens(table: dict) -> set[str]:
     return tokens
 
 
+def column_terms(col: dict) -> set[str]:
+    """
+    Mots d'une colonne : son libellé (manuel ou Odoo) et ses synonymes ; le nom technique
+    seulement en l'absence de libellé. Le nom technique trompe : `partner_id` vaut « Vendor »
+    sur un bon de commande et « Customer » sur une commande client.
+    """
+    terms: set[str] = set()
+    for key in ("label", "odoo_label", "synonyms"):
+        terms.update(tokenize(col.get(key), keep_stopwords=True))
+    if not terms:
+        terms.update(tokenize(col["column_name"], keep_stopwords=True))
+    return terms - {"id"}
+
+
 def column_tokens(columns: list[dict]) -> set[str]:
     tokens: set[str] = set()
     for col in columns:
-        if col["column_name"] in NOISE_COLUMNS:
-            continue
-        for key in ("column_name", "label", "odoo_label", "synonyms"):
-            tokens.update(tokenize(col.get(key), keep_stopwords=True))
+        if col["column_name"] not in NOISE_COLUMNS:
+            tokens |= column_terms(col)
     return tokens
 
 
@@ -247,7 +259,8 @@ def join_tables(graph: dict, seeds: list[str], max_hops: int = 3) -> dict[str, s
 
 
 def lookup_tables(query: Query, columns_by_table: dict[str, list[dict]],
-                  relations: list[dict], seeds: list[str]) -> dict[str, str]:
+                  relations: list[dict], seeds: list[str],
+                  tables_by_name: Optional[dict[str, dict]] = None, max_lookups: int = 3) -> dict[str, str]:
     """
     Cibles des clés étrangères d'une graine dont le nom ou le libellé correspond à la question.
     Ex. « customers » → sale_order.partner_id (« Customer ») → res_partner.
@@ -267,8 +280,20 @@ def lookup_tables(query: Query, columns_by_table: dict[str, list[dict]],
                 col_terms = set(tokenize(col["column_name"]))
             col_terms -= {"id"} | own
             target = targets.get((table, col["column_name"]))
-            if target and target not in seeds and target not in added and col_terms & terms:
-                added[target] = f"lookup:{table}.{col['column_name']}"
+            if not target or target in seeds or target in added or not col_terms & terms:
+                continue
+            info = (tables_by_name or {}).get(target, {})
+            if info.get("row_count") == 0:
+                continue                       # table vide : rien à y chercher
+            # La table cible doit correspondre au même mot de la question :
+            # « customer » (customer, partner, contact…) → res_partner (« partner », « Contact »)
+            if tables_by_name is not None:
+                core = table_core_tokens(info)
+                if not any(exp & col_terms and exp & core for exp in query.expansions.values()):
+                    continue
+            added[target] = f"lookup:{table}.{col['column_name']}"
+            if len(added) >= max_lookups:
+                return added
     return added
 
 
@@ -286,17 +311,27 @@ def _is_amount(col: dict) -> bool:
             or name in ("balance", "debit", "credit", "quantity", "product_uom_qty", "qty_available"))
 
 
+# Colonnes souvent indispensables pour filtrer ou nommer (si elles existent)
+ESSENTIAL_COLUMNS = ("name", "state", "stage_id", "type", "move_type", "payment_state", "invoice_status",
+                     "probability", "date", "date_order", "invoice_date")
+
+
 def select_columns(table: str, columns: list[dict], query: Query, join_columns: set[str],
-                   max_columns: int, top_similar: int = 6) -> list[tuple[dict, str]]:
+                   max_columns: int, top_similar: int = 4) -> list[tuple[dict, str]]:
     """
     Colonnes gardées pour une table, avec la raison, par priorité :
-    clé primaire, clés de jointure, colonnes citées par la question, colonnes essentielles
-    (nom, état, dates, montants), puis les plus proches de la question.
+      1. clé primaire
+      2. clés de jointure vers une autre table sélectionnée (une par table cible)
+      3. colonnes citées par un mot de la question
+      4. colonnes essentielles (nom, état, type…) puis montants et dates les plus proches
+      5. colonnes citées par un synonyme, puis les plus proches de la question
+    Une clé étrangère vers une table non sélectionnée n'est jamais gardée : elle ne sert à rien au modèle.
     """
-    terms = query.all_terms
-    mentioned_noise = {c for c in NOISE_COLUMNS if set(tokenize(c)) & terms - {"date"}}
+    original = set(query.tokens)
+    expanded = query.all_terms
     usable = [c for c in columns
-              if c["column_name"] not in NOISE_COLUMNS or c["column_name"] in mentioned_noise]
+              if c["column_name"] not in NOISE_COLUMNS
+              and (not c.get("is_fk") or c["column_name"] in join_columns)]
     by_sim = sorted(usable, key=lambda c: float(c.get("similarity") or 0), reverse=True)
 
     chosen: dict[str, str] = {}
@@ -312,28 +347,26 @@ def select_columns(table: str, columns: list[dict], query: Query, join_columns: 
         if c["column_name"] in join_columns:
             add(c, "join")
     for c in usable:
-        c_terms = set(tokenize(c["column_name"])) | set(tokenize(c.get("label"))) \
-            | set(tokenize(c.get("odoo_label")))
-        if (c_terms - {"id"}) & terms:
+        if column_terms(c) & original:
             add(c, "mentioned")
     for c in usable:
-        if c["column_name"] in ("name", "state", "stage_id", "active") or c["column_name"].endswith("_state"):
+        if c["column_name"] in ESSENTIAL_COLUMNS:
             add(c, "essential")
-    for c in [c for c in by_sim if _is_date(c)][:2]:
-        add(c, "essential_date")
     for c in [c for c in by_sim if _is_amount(c)][:3]:
         add(c, "essential_amount")
-    for c in [c for c in by_sim if c["column_name"] not in TECHNICAL_FK_COLUMNS][:top_similar]:
+    for c in [c for c in by_sim if _is_date(c)][:2]:
+        add(c, "essential_date")
+    for c in by_sim:
+        if column_terms(c) & expanded:
+            add(c, "mentioned_synonym")
+    for c in by_sim[:top_similar]:
         add(c, "similar")
 
-    ordered = [(c, chosen[c["column_name"]]) for c in columns if c["column_name"] in chosen]
-    priority = {"primary_key": 0, "join": 1, "mentioned": 2, "essential": 3,
-                "essential_amount": 4, "essential_date": 5, "similar": 6}
-    if len(ordered) > max_columns:
-        keep = sorted(ordered, key=lambda x: priority[x[1]])[:max_columns]
-        keep_names = {c["column_name"] for c, _ in keep}
-        ordered = [x for x in ordered if x[0]["column_name"] in keep_names]
-    return ordered
+    priority = {"primary_key": 0, "join": 1, "mentioned": 2, "essential": 3, "essential_amount": 4,
+                "essential_date": 5, "mentioned_synonym": 6, "similar": 7}
+    ranked = sorted(chosen.items(), key=lambda kv: priority[kv[1]])[:max_columns]
+    keep = dict(ranked)
+    return [(c, keep[c["column_name"]]) for c in columns if c["column_name"] in keep]
 
 
 # ── Schéma compact ───────────────────────────────────────────────────────────
@@ -387,6 +420,30 @@ def estimate_tokens(text: str) -> int:
     return math.ceil(len(text) / 4)
 
 
+def pick_join_relations(relations: list[dict], selected: set[str],
+                        columns_by_table: dict[str, list[dict]]) -> list[dict]:
+    """
+    Une seule clé de jointure par couple de tables sélectionnées. Ex. sale_order → res_partner a
+    partner_id, partner_invoice_id et partner_shipping_id : on garde partner_id. Règle : la colonne
+    nommée d'après la table cible (`partner_id` pour res_partner, `order_id` pour sale_order),
+    sinon la plus proche de la question.
+    """
+    by_pair: dict[tuple[str, str], list[dict]] = {}
+    for r in relations:
+        if (r["from_table"] in selected and r["to_table"] in selected
+                and r["from_table"] != r["to_table"] and r["from_column"] not in TECHNICAL_FK_COLUMNS):
+            by_pair.setdefault((r["from_table"], r["to_table"]), []).append(r)
+
+    sims = {(t, c["column_name"]): float(c.get("similarity") or 0)
+            for t, cols in columns_by_table.items() for c in cols}
+    picked = []
+    for (src, dst), rels in by_pair.items():
+        canonical = f"{dst.split('_')[-1]}_id"
+        rels.sort(key=lambda r: (r["from_column"] != canonical, -sims.get((src, r["from_column"]), 0)))
+        picked.append(rels[0])
+    return picked
+
+
 # ── Plan complet ─────────────────────────────────────────────────────────────
 
 @dataclass
@@ -422,7 +479,7 @@ def plan_schema(query: Query, candidates: list[TableCandidate], tables_by_name: 
     graph = build_graph(relations)
     joins = {t: r for t, r in join_tables(graph, seed_names[:params.join_seeds], params.max_join_hops).items()
              if t not in seed_names}
-    lookups = lookup_tables(query, columns_by_table, relations, seed_names)
+    lookups = lookup_tables(query, columns_by_table, relations, seed_names, tables_by_name)
 
     order: list[tuple[str, str]] = [(n, "search") for n in seed_names]
     order += [(t, r) for t, r in joins.items()]
@@ -430,15 +487,11 @@ def plan_schema(query: Query, candidates: list[TableCandidate], tables_by_name: 
     order = [(t, r) for t, r in order if t in tables_by_name][:params.max_tables]
     selected = {t for t, _ in order}
 
-    # Colonnes de jointure : clés étrangères entre tables sélectionnées (des deux côtés)
+    used_relations = pick_join_relations(relations, selected, columns_by_table)
     join_cols: dict[str, set[str]] = {t: set() for t in selected}
-    used_relations = []
-    for r in relations:
-        if r["from_table"] in selected and r["to_table"] in selected and r["from_column"] not in TECHNICAL_FK_COLUMNS \
-                and r["from_table"] != r["to_table"]:
-            join_cols[r["from_table"]].add(r["from_column"])
-            join_cols[r["to_table"]].add(r["to_column"])
-            used_relations.append(r)
+    for r in used_relations:
+        join_cols[r["from_table"]].add(r["from_column"])
+        join_cols[r["to_table"]].add(r["to_column"])
 
     by_score = {c.table_name: c for c in ranked}
     max_cols = params.max_columns
