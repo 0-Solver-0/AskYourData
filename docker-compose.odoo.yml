@@ -4,6 +4,10 @@
 #  Commande : docker compose -f docker-compose.odoo.yml up -d
 # ══════════════════════════════════════════════════════════════════════════════
 
+# Nom de projet explicite : les deux fichiers sont dans le même dossier ; sans nom distinct,
+# « --remove-orphans » sur l'un supprimerait les conteneurs de l'autre.
+name: askyourdata-odoo
+
 services:
 
   postgres_odoo:
