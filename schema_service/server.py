@@ -8,7 +8,7 @@ Endpoints :
   GET  /health                  — état du service
   POST /index                   — indexe les tables d'un compte (filtrage, métadonnées Odoo, embeddings)
   GET  /index/report            — tables retenues et exclues (avec raison) pour relecture
-  POST /select                  — question → tables → colonnes → relations → DDL minimal
+  POST /select                  — question → tables (recherche, jointures, références) → schéma compact
   POST /annotate/table          — annoter une table (prioritaire sur l'automatique)
   POST /annotate/column         — annoter une colonne (prioritaire sur l'automatique)
   POST /reindex                 — recalcule les embeddings d'une table et de ses colonnes
@@ -25,10 +25,10 @@ from flask import Flask, jsonify, request
 from pgvector.psycopg2 import register_vector
 from sentence_transformers import SentenceTransformer
 
+from . import search
 from .accounts import default_account_from_env, sync_default_account
 from .filters import load_filter_config
 from .indexer import index_account, index_report, reindex_table_embeddings
-from .text_builders import column_display_label
 
 # ── Logging ────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -48,8 +48,6 @@ NL2SQL_DB    = {
     "user":     os.getenv("NL2SQL_DB_USER",      "nl2sql"),
     "password": os.getenv("NL2SQL_DB_PASSWORD",  "nl2sql"),
 }
-TOP_K_TABLES  = int(os.getenv("TOP_K_TABLES",  "10"))
-TOP_K_COLUMNS = int(os.getenv("TOP_K_COLUMNS", "20"))
 SCHEMA_SQL    = os.path.join(os.path.dirname(__file__), "schema.sql")
 
 app      = Flask(__name__)
@@ -118,126 +116,60 @@ def get_source_conn(account: dict):
     )
 
 
-# ── Sélection des tables ───────────────────────────────────────────────────
-def select_tables(conn, q_vector: list[float], account_id: int) -> list:
-    """Recherche sémantique des tables les plus pertinentes."""
+# ── Recherche de schéma ────────────────────────────────────────────────────
+def load_search_data(conn, account_id: int, q_vector: list[float]):
+    """
+    Charge en une fois, pour un compte : tables (avec similarité à la question),
+    colonnes (avec similarité) et relations. Quelques centaines de tables : quelques ms.
+    """
     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute("""
-            SELECT id, table_name, schema_name, ddl, label, odoo_label, synonyms, domain,
-                   1 - (embedding <=> %s::vector) AS similarity
-            FROM nl2sql_tables
-            WHERE account_id = %s
-              AND embedding IS NOT NULL
-            ORDER BY embedding <=> %s::vector
-            LIMIT %s
-        """, (q_vector, account_id, q_vector, TOP_K_TABLES))
-        return [dict(r) for r in cur.fetchall()]
-
-
-# ── Sélection des colonnes (embeddings stockés) ────────────────────────────
-def select_columns(conn, q_vector: list[float], table_ids: list) -> dict:
-    """
-    Pour chaque table sélectionnée : PK et FK toujours gardées (jointures),
-    puis colonnes les plus proches de la question, jusqu'à TOP_K_COLUMNS.
-    """
-    if not table_ids:
-        return {}
-
-    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            SELECT id, table_name, odoo_model, label, odoo_label, synonyms, domain, description, row_count,
+                   CASE WHEN embedding IS NULL THEN 0 ELSE 1 - (embedding <=> %s::vector) END AS similarity
+            FROM nl2sql_tables WHERE account_id = %s
+        """, (q_vector, account_id))
+        tables = [dict(r) for r in cur.fetchall()]
         cur.execute("""
-            SELECT c.id, c.table_id, c.column_name, c.data_type, c.is_pk, c.is_fk, c.is_nullable,
-                   c.label, c.synonyms, c.display, c.odoo_label, c.selection_values,
-                   CASE WHEN c.embedding IS NULL THEN 0
-                        ELSE 1 - (c.embedding <=> %s::vector) END AS similarity
-            FROM nl2sql_columns c
-            WHERE c.table_id = ANY(%s)
-            ORDER BY c.table_id, c.id
-        """, (q_vector, table_ids))
-        all_cols = [dict(r) for r in cur.fetchall()]
-
-    by_table: dict[int, list] = {}
-    for col in all_cols:
-        by_table.setdefault(col["table_id"], []).append(col)
-
-    result = {}
-    for tid, cols in by_table.items():
-        ranked = sorted(
-            cols,
-            key=lambda c: (bool(c["is_pk"]), bool(c["is_fk"]), float(c["similarity"] or 0)),
-            reverse=True,
-        )
-        result[tid] = ranked[:TOP_K_COLUMNS]
-    return result
-
-
-# ── Sélection des relations ────────────────────────────────────────────────
-def select_relations(conn, account_id: int, table_names: list) -> list:
-    """Relations entre les tables sélectionnées."""
-    if not table_names:
-        return []
-    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            SELECT t.table_name, c.column_name, c.data_type, c.is_pk, c.is_fk, c.is_nullable,
+                   c.label, c.synonyms, c.display, c.odoo_label, c.odoo_type, c.selection_values,
+                   CASE WHEN c.embedding IS NULL THEN 0 ELSE 1 - (c.embedding <=> %s::vector) END AS similarity
+            FROM nl2sql_columns c JOIN nl2sql_tables t ON t.id = c.table_id
+            WHERE t.account_id = %s
+            ORDER BY t.table_name, c.id
+        """, (q_vector, account_id))
+        columns_by_table: dict[str, list[dict]] = {}
+        for r in cur.fetchall():
+            columns_by_table.setdefault(r["table_name"], []).append(dict(r))
         cur.execute("""
             SELECT from_table, from_column, to_table, to_column, label, join_hint
-            FROM nl2sql_relations
-            WHERE account_id = %s
-              AND from_table = ANY(%s)
-              AND to_table   = ANY(%s)
-        """, (account_id, table_names, table_names))
-        return [dict(r) for r in cur.fetchall()]
+            FROM nl2sql_relations WHERE account_id = %s
+        """, (account_id,))
+        relations = [dict(r) for r in cur.fetchall()]
+
+    candidates = []
+    for t in tables:
+        cols = columns_by_table.get(t["table_name"], [])
+        candidates.append(search.TableCandidate(
+            id=t["id"],
+            table_name=t["table_name"],
+            row_count=t["row_count"],
+            core_tokens=search.table_core_tokens(t),
+            column_tokens=search.column_tokens(cols),
+            vector_score=float(t["similarity"] or 0),
+            column_vector_score=max((float(c["similarity"] or 0) for c in cols
+                                     if c["column_name"] not in search.NOISE_COLUMNS), default=0.0),
+        ))
+    tables_by_name = {t["table_name"]: t for t in tables}
+    return candidates, tables_by_name, columns_by_table, relations
 
 
-# ── DDL minimal ────────────────────────────────────────────────────────────
-def build_minimal_ddl(tables: list, columns_by_table: dict, relations: list) -> str:
-    """DDL réduit aux tables, colonnes et relations retenues, avec libellés en commentaire."""
-    ddl_parts = []
-    for table in tables:
-        cols = columns_by_table.get(table["id"], [])
-        header = f"CREATE TABLE {table['table_name']} ("
-        table_label = table.get("label") or table.get("odoo_label")
-        if table_label:
-            header += f"  -- {table_label}"
-        # (définition, commentaire) : la virgule doit précéder le commentaire, sinon elle serait commentée
-        entries: list[tuple[str, str]] = []
-        for col in cols:
-            line = f"    {col['column_name']} {col['data_type']}"
-            if col.get("is_pk"):
-                line += " PRIMARY KEY"
-            if not col.get("is_nullable", True):
-                line += " NOT NULL"
-            comment = ""
-            if col.get("label") or col.get("odoo_label"):
-                comment = column_display_label(col)
-                if col.get("synonyms"):
-                    comment += f" ({col['synonyms']})"
-            entries.append((line, comment))
-
-        for rel in relations:
-            if rel["from_table"] == table["table_name"]:
-                entries.append((f"    FOREIGN KEY ({rel['from_column']}) "
-                                f"REFERENCES {rel['to_table']}({rel['to_column']})", ""))
-
-        body = []
-        for i, (line, comment) in enumerate(entries):
-            sep = "," if i < len(entries) - 1 else ""
-            body.append(f"{line}{sep}  -- {comment}" if comment else f"{line}{sep}")
-        ddl_parts.append("\n".join([header, *body, ");"]))
-    return "\n\n".join(ddl_parts)
-
-
-# ── Colonnes à afficher ────────────────────────────────────────────────────
-def get_display_columns(columns_by_table: dict) -> list:
-    """Colonnes à afficher dans les résultats (hors colonnes techniques, sauf display=True)."""
-    technical = {"id", "create_date", "write_date", "create_uid", "write_uid",
-                 "created_at", "updated_at", "deleted_at", "__last_update"}
-    display = []
-    for cols in columns_by_table.values():
-        for col in cols:
-            name = col["column_name"].lower()
-            if col.get("display") is True:
-                display.append(col["column_name"])
-            elif name not in technical and not (col.get("is_pk") and not col.get("label")):
-                display.append(col["column_name"])
-    return display
+def plan_params() -> search.PlanParams:
+    return search.PlanParams(
+        seed_tables=int(os.getenv("SEARCH_SEED_TABLES", "5")),
+        max_tables=int(os.getenv("SEARCH_MAX_TABLES", "10")),
+        max_columns=int(os.getenv("SEARCH_MAX_COLUMNS", "15")),
+        token_budget=int(os.getenv("SCHEMA_TOKEN_BUDGET", "3000")),
+    )
 
 
 # ── Endpoints ──────────────────────────────────────────────────────────────
@@ -262,12 +194,17 @@ def health():
 @app.post("/select")
 def select():
     """
-    Body : {"question": "What is the average order value per customer?", "account_id": 1}
-    Retourne : {"tables", "columns_display", "schema_ddl", "relations", "elapsed_s"}
+    Question → tables et colonnes utiles → schéma compact.
+
+    Body : {"question": "...", "account_id": 1, "debug": false}
+    Retourne : {"tables", "columns_display", "schema_ddl", "relations", "token_estimate", "elapsed_s"}
+      tables : [{table_name, reason (search | join:a↔b | lookup:table.colonne), score, …}]
+      debug  : true → ajoute le détail des scores, des colonnes gardées et le classement
     """
     data       = request.get_json(silent=True) or {}
     question   = data.get("question", "").strip()
     account_id = data.get("account_id")
+    debug      = bool(data.get("debug", False))
 
     if not question:
         return jsonify({"error": "'question' obligatoire"}), 400
@@ -276,35 +213,39 @@ def select():
 
     try:
         t0       = time.time()
-        conn     = get_conn()
-        q_vector = embed_one(question)   # une seule fois par question
+        query    = search.build_query(question, search.load_synonyms())
+        q_vector = embed_one(query.expanded_text())   # une seule fois par question
 
-        tables = select_tables(conn, q_vector, account_id)
-        if not tables:
-            conn.close()
-            return jsonify({"error": "Aucune table trouvée — lancez /index d'abord"}), 404
-
-        table_ids   = [t["id"]         for t in tables]
-        table_names = [t["table_name"] for t in tables]
-
-        columns_by_table = select_columns(conn, q_vector, table_ids)
-        relations        = select_relations(conn, account_id, table_names)
-        schema_ddl       = build_minimal_ddl(tables, columns_by_table, relations)
-        display_columns  = get_display_columns(columns_by_table)
+        conn = get_conn()
+        candidates, tables_by_name, columns_by_table, relations = load_search_data(conn, account_id, q_vector)
         conn.close()
+        if not candidates:
+            return jsonify({"error": "Aucune table indexée — lancez /index d'abord"}), 404
 
+        plan = search.plan_schema(query, candidates, tables_by_name, columns_by_table, relations, plan_params())
         elapsed = round(time.time() - t0, 3)
-        logger.info("✅ Select en %ss | %d tables | %d relations", elapsed, len(tables), len(relations))
+        logger.info("✅ Select en %ss | %d tables | ~%d tokens",
+                    elapsed, len(plan["tables"]), plan["token_estimate"])
 
-        return jsonify({
-            "tables":          [{"table_name": t["table_name"],
-                                 "similarity": round(float(t["similarity"]), 3)}
-                                for t in tables],
-            "columns_display": display_columns,
-            "schema_ddl":      schema_ddl,
-            "relations":       relations,
-            "elapsed_s":       elapsed,
-        })
+        response = {
+            "tables": [{"table_name": t["table_name"], "reason": t["reason"], "score": t["score"]}
+                       for t in plan["tables"]],
+            "columns_display": [f"{t['table_name']}.{c['column_name']}"
+                                for t in plan["tables"] for c in t["columns"]
+                                if c["reason"] not in ("primary_key", "join")],
+            "schema_ddl": plan["schema_ddl"],
+            "relations": plan["relations"],
+            "token_estimate": plan["token_estimate"],
+            "elapsed_s": elapsed,
+        }
+        if debug:
+            response["debug"] = {
+                "query_terms": {t: sorted(v) for t, v in query.expansions.items()},
+                "encoded_text": query.expanded_text(),
+                "tables": plan["tables"],
+                "ranking": plan["ranking"],
+            }
+        return jsonify(response)
 
     except Exception as exc:  # noqa: BLE001
         logger.exception("Erreur /select")

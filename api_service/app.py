@@ -9,6 +9,7 @@ Pipeline actuel :
 
 Endpoints :
   POST /api/v1/translate   — question → schéma réduit (sql = null tant que la génération n'est pas branchée)
+  POST /api/v1/schema/debug — diagnostic de la recherche de schéma
   GET  /api/v1/health      — healthcheck des services
   GET  /api/v1/schemas     — liste les comptes disponibles
   POST /api/v1/index       — indexe les tables d'un compte (dry_run possible)
@@ -40,10 +41,10 @@ app.config["SECRET_KEY"] = SECRET_KEY
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
 
-def call_schema(question: str, account_id: int) -> dict:
+def call_schema(question: str, account_id: int, debug: bool = False) -> dict:
     resp = requests.post(
         f"{SCHEMA_SERVICE_URL}/select",
-        json={"question": question, "account_id": account_id},
+        json={"question": question, "account_id": account_id, "debug": debug},
         timeout=30,
     )
     resp.raise_for_status()
@@ -178,6 +179,31 @@ def annotate_column():
         return jsonify({"error": str(exc)}), 500
 
 
+@app.post("/api/v1/schema/debug")
+def schema_debug():
+    """
+    Diagnostic de la recherche de schéma : tables retenues et pourquoi (recherche, jointure,
+    référence), détail des scores, colonnes gardées, classement, taille en tokens.
+    Body : {"question": "...", "account_id": 1}
+    """
+    data = request.get_json(silent=True) or {}
+    if not data.get("question") or not data.get("account_id"):
+        return jsonify({"error": "'question' et 'account_id' obligatoires"}), 400
+    try:
+        resp = requests.post(
+            f"{SCHEMA_SERVICE_URL}/select",
+            json={"question": data["question"], "account_id": data["account_id"], "debug": True},
+            timeout=30,
+        )
+        return jsonify(resp.json()), resp.status_code
+    except requests.exceptions.ConnectionError:
+        return jsonify({"error": "Impossible de joindre le schema_service"}), 503
+    except requests.exceptions.Timeout:
+        return jsonify({"error": "Timeout schema_service"}), 504
+    except ValueError:
+        return jsonify({"error": "Réponse invalide du schema_service"}), 502
+
+
 @app.post("/api/v1/translate")
 def translate():
     """
@@ -245,6 +271,7 @@ def translate():
         "tables_selected":    tables_selected,
         "columns_display":    columns_display,
         "schema_ddl":         schema_ddl,
+        "token_estimate":     schema_result.get("token_estimate"),
         "sql":                None,
         "status":             "generation_not_configured",
         "elapsed_s":          elapsed,

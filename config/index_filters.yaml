@@ -42,6 +42,17 @@ exclude_tables:
   - res_config_settings
   - report_paperformat
   - report_layout
+  # Paramétrage, rarement utile pour une question métier
+  - account_cash_rounding
+  - account_lock_exception
+  - account_journal_group
+  - sale_pdf_form_field
+  - quotation_document
+  - product_document
+  - res_partner_autocomplete_sync
+  - phone_blacklist
+  - calendar_alarm
+  - calendar_filters
 
 exclude_prefixes:
   - ir_              # vues QWeb, menus, actions, pièces jointes, paramètres…
@@ -69,6 +80,11 @@ exclude_prefixes:
   - res_users_       # journaux, réglages, clés API des utilisateurs (res_users reste via la liste blanche)
   - res_device
   - res_config_
+  - account_report          # paramétrage des rapports comptables (lignes, colonnes, expressions)
+  - account_reconcile_model # règles de rapprochement bancaire
+  - barcode_
+  - crm_iap_                # paramétrage de la génération de pistes (IAP)
+  - crm_lead_scoring_       # statistiques internes du scoring de pistes
 
 exclude_suffixes:
   - _rel             # tables de liaison many2many

@@ -18,6 +18,16 @@ TECHNICAL_COLUMNS = {
     "message_main_attachment_id", "__last_update",
 }
 
+# Libellés présents sur la plupart des tables Odoo : ils rendent toutes les tables semblables
+# et sont donc retirés du texte d'une table (ils restent indexés au niveau des colonnes).
+GENERIC_COLUMN_LABELS = {
+    "id", "company", "currency", "company currency", "sequence", "active", "color", "color index",
+    "created by", "created on", "last updated by", "last updated on", "display name",
+    "message main attachment", "notes", "note", "description",
+}
+# Nombre maximal de colonnes citées dans le texte d'une table : l'embedder tronque vers 256 tokens
+MAX_TABLE_TEXT_COLUMNS = 15
+
 MAX_SELECTION_VALUES = 20
 MAX_HELP_CHARS = 200
 
@@ -65,8 +75,9 @@ def build_column_text(col: dict) -> str:
 
 def build_table_text(table: dict, columns: list[dict], relation_labels: Iterable[str] = ()) -> str:
     """
-    Texte d'une table, du plus informatif au moins informatif :
-    nom, modèle Odoo, libellés, synonymes, domaine, description, puis colonnes métier.
+    Texte d'une table, court et distinctif, du plus informatif au moins informatif :
+    nom, modèle Odoo, libellés, synonymes, domaine, description, puis au plus
+    MAX_TABLE_TEXT_COLUMNS colonnes métier (sans les libellés communs à toutes les tables).
     """
     parts: list[str] = [table["table_name"], humanize(table["table_name"])]
     for key in ("odoo_model", "label", "odoo_label", "synonyms", "domain", "description"):
@@ -79,8 +90,11 @@ def build_table_text(table: dict, columns: list[dict], relation_labels: Iterable
         if col["column_name"] in TECHNICAL_COLUMNS:
             continue
         label = column_display_label(col)
-        if label not in col_labels:
-            col_labels.append(label)
+        if label.lower() in GENERIC_COLUMN_LABELS or label in col_labels:
+            continue
+        col_labels.append(label)
+        if len(col_labels) >= MAX_TABLE_TEXT_COLUMNS:
+            break
     if col_labels:
         parts.append("columns: " + ", ".join(col_labels))
 
