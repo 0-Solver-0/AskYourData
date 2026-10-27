@@ -218,3 +218,19 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# ── AskYourData ───────────────────────────────────────────────────────────────
+# Poids de modèles : jamais dans Git
+models/
+*.gguf
+*.safetensors
+*.bin
+*.pt
+*.onnx
+# Logs et télémétrie
+logs/
+# Dumps de base et données
+*.dump
+*.sql.gz
+*.backup
+data/private/

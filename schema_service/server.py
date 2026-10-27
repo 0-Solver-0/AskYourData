@@ -16,16 +16,16 @@ Endpoints :
   POST /reindex                 — recalcule l'embedding d'une table
 """
 
+import logging
 import os
 import sys
-import logging
 import time
 
 import psycopg2
 import psycopg2.extras
+from flask import Flask, jsonify, request
 from pgvector.psycopg2 import register_vector
 from sentence_transformers import SentenceTransformer
-from flask import Flask, request, jsonify
 
 # ── Logging ────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -161,8 +161,6 @@ def select_columns(conn, question: str, table_ids: list) -> dict:
     """
     if not table_ids:
         return {}
-
-    q_vector = embedder.encode(question).tolist()
 
     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         # Récupère toutes les colonnes des tables sélectionnées
