@@ -49,6 +49,13 @@ CATALOG = {
     ]),
     "account_move": ("account.move", "Journal Entry", 24, [
         col("id", pk=True, label="ID"), col("name", "character varying", "Number"),
+        col("journal_id", label="Journal", fk=True, sim=0.5),
+        col("origin_payment_id", label="Payment", fk=True, sim=0.5),
+        col("tax_cash_basis_rec_id", label="Tax Cash Basis Entry of", fk=True, sim=0.5),
+        col("commercial_partner_id", label="Commercial Entity", fk=True, sim=0.5),
+        col("partner_shipping_id", label="Delivery Address", fk=True, sim=0.5),
+        col("partner_bank_id", label="Recipient Bank", fk=True, sim=0.5),
+        col("reversed_entry_id", label="Reversal of", fk=True, sim=0.5),
         col("partner_id", label="Partner", fk=True), col("invoice_user_id", label="Salesperson", fk=True),
         col("move_type", "character varying", "Type", sel="entry=Journal Entry; out_invoice=Customer Invoice"),
         col("payment_state", "character varying", "Payment Status", sel="not_paid=Not Paid; paid=Paid"),
@@ -68,6 +75,19 @@ CATALOG = {
     "crm_team": ("crm.team", "Sales Team", 4, [
         col("id", pk=True, label="ID"), col("name", "jsonb", "Sales Team", odoo_type="char"),
         col("invoiced_target", "double precision", "Invoicing Target"),
+    ]),
+    "purchase_order": ("purchase.order", "Purchase Order", 11, [
+        col("id", pk=True, label="ID"), col("name", "character varying", "Order Reference"),
+        col("partner_id", label="Vendor", fk=True, sim=0.5), col("user_id", label="Buyer", fk=True),
+        col("invoice_count", label="Bill Count", sim=0.5), col("invoice_status", "character varying", "Billing Status"),
+        col("amount_total", "numeric", "Total", odoo_type="monetary", sim=0.5),
+    ]),
+    "account_payment": ("account.payment", "Payments", 0, [
+        col("id", pk=True, label="ID"), col("amount", "numeric", "Amount", odoo_type="monetary"),
+        col("partner_id", label="Customer/Vendor", fk=True), col("payment_type", "character varying", "Payment Type"),
+    ]),
+    "account_journal": ("account.journal", "Journal", 16, [
+        col("id", pk=True, label="ID"), col("name", "jsonb", "Journal Name", odoo_type="char"),
     ]),
     "purchase_order_line": ("purchase.order.line", "Purchase Order Line", 23, [
         col("id", pk=True, label="ID"), col("price_subtotal", "numeric", "Subtotal", odoo_type="monetary"),
@@ -89,6 +109,10 @@ RELATIONS = [
     ("sale_order", "partner_id", "res_partner"), ("sale_order", "user_id", "res_users"),
     ("sale_order", "team_id", "crm_team"), ("sale_order_line", "order_id", "sale_order"),
     ("account_move", "partner_id", "res_partner"), ("account_move", "invoice_user_id", "res_users"),
+    ("account_move", "commercial_partner_id", "res_partner"), ("account_move", "partner_shipping_id", "res_partner"),
+    ("account_move", "journal_id", "account_journal"), ("account_move", "origin_payment_id", "account_payment"),
+    ("purchase_order", "partner_id", "res_partner"), ("purchase_order", "user_id", "res_users"),
+    ("account_payment", "partner_id", "res_partner"),
     ("crm_lead", "stage_id", "crm_stage"), ("crm_lead", "user_id", "res_users"),
     ("res_users", "partner_id", "res_partner"), ("purchase_order_line", "partner_id", "res_partner"),
     ("account_analytic_line", "partner_id", "res_partner"),
@@ -160,6 +184,26 @@ def test_crm_pipeline_by_stage(synonyms):
 def test_unpaid_invoices_by_salesperson(synonyms):
     p = plan("Customers with the highest unpaid invoice amount, by salesperson", synonyms)
     assert {"account_move", "res_partner", "res_users"} <= set(names(p))
+    # Cas observé sur la vraie base : achats en tête et tables parasites ajoutées par « référence »
+    assert names(p)[0] != "purchase_order"
+    assert not {"account_payment", "account_journal"} & set(names(p))
+
+
+def test_key_columns_are_not_crowded_out_by_foreign_keys(synonyms):
+    # Cas observé : account_move perdait amount_residual, payment_state, move_type au profit de clés étrangères
+    p = plan("Customers with the highest unpaid invoice amount, by salesperson", synonyms)
+    am = next(t for t in p["tables"] if t["table_name"] == "account_move")
+    kept = {c["column_name"] for c in am["columns"]}
+    assert {"amount_residual", "payment_state", "move_type", "partner_id", "invoice_user_id"} <= kept
+    assert not kept & {"journal_id", "origin_payment_id", "tax_cash_basis_rec_id", "partner_bank_id",
+                       "reversed_entry_id", "commercial_partner_id", "partner_shipping_id"}
+
+
+def test_one_join_key_per_table_pair(synonyms):
+    p = plan("Customers with the highest unpaid invoice amount, by salesperson", synonyms)
+    pairs = [(r["from_table"], r["to_table"]) for r in p["relations"]]
+    assert len(pairs) == len(set(pairs))
+    assert ("account_move", "partner_id") in {(r["from_table"], r["from_column"]) for r in p["relations"]}
 
 
 def test_empty_tables_are_penalised(synonyms):
