@@ -34,7 +34,12 @@
         ],
         "body": {
           "mode": "raw",
-          "raw": "{\n  \"account_id\": {{account_id}},\n  \"dry_run\": true\n}"
+          "raw": "{\n  \"account_id\": {{account_id}},\n  \"dry_run\": true\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
         },
         "url": "{{base_url}}/api/v1/index"
       }
@@ -51,7 +56,12 @@
         ],
         "body": {
           "mode": "raw",
-          "raw": "{\n  \"account_id\": {{account_id}}\n}"
+          "raw": "{\n  \"account_id\": {{account_id}}\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
         },
         "url": "{{base_url}}/api/v1/index"
       }
@@ -92,7 +102,12 @@
         ],
         "body": {
           "mode": "raw",
-          "raw": "{\n  \"question\": \"Top 5 customers by revenue\",\n  \"account_id\": {{account_id}}\n}"
+          "raw": "{\n  \"question\": \"Top 5 customers by revenue\",\n  \"account_id\": {{account_id}}\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
         },
         "url": "{{base_url}}/api/v1/translate"
       }
@@ -109,7 +124,12 @@
         ],
         "body": {
           "mode": "raw",
-          "raw": "{\n  \"question\": \"Customers with the highest unpaid invoice amount, by salesperson\",\n  \"account_id\": {{account_id}}\n}"
+          "raw": "{\n  \"question\": \"Customers with the highest unpaid invoice amount, by salesperson\",\n  \"account_id\": {{account_id}}\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
         },
         "url": "{{base_url}}/api/v1/translate"
       }
@@ -126,7 +146,12 @@
         ],
         "body": {
           "mode": "raw",
-          "raw": "{\n  \"question\": \"Customers with the highest unpaid invoice amount, by salesperson\",\n  \"account_id\": {{account_id}}\n}"
+          "raw": "{\n  \"question\": \"Customers with the highest unpaid invoice amount, by salesperson\",\n  \"account_id\": {{account_id}}\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
         },
         "url": "{{base_url}}/api/v1/schema/debug"
       }
@@ -143,7 +168,12 @@
         ],
         "body": {
           "mode": "raw",
-          "raw": "{\n  \"question\": \"Expected revenue in the CRM pipeline by stage\",\n  \"account_id\": {{account_id}}\n}"
+          "raw": "{\n  \"question\": \"Expected revenue in the CRM pipeline by stage\",\n  \"account_id\": {{account_id}}\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
         },
         "url": "{{base_url}}/api/v1/translate"
       }
@@ -160,7 +190,12 @@
         ],
         "body": {
           "mode": "raw",
-          "raw": "{\n  \"question\": \"Expected revenue in the CRM pipeline by stage\",\n  \"account_id\": {{account_id}}\n}"
+          "raw": "{\n  \"question\": \"Expected revenue in the CRM pipeline by stage\",\n  \"account_id\": {{account_id}}\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
         },
         "url": "{{base_url}}/api/v1/schema/debug"
       }
@@ -177,7 +212,12 @@
         ],
         "body": {
           "mode": "raw",
-          "raw": "{\n  \"question\": \"Products with less than 10 units in stock\",\n  \"account_id\": {{account_id}}\n}"
+          "raw": "{\n  \"question\": \"Products with less than 10 units in stock\",\n  \"account_id\": {{account_id}}\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
         },
         "url": "{{base_url}}/api/v1/translate"
       }
@@ -194,7 +234,12 @@
         ],
         "body": {
           "mode": "raw",
-          "raw": "{\n  \"account_id\": {{account_id}},\n  \"table_name\": \"sale_order\",\n  \"label\": \"Sales orders\",\n  \"synonyms\": \"orders, sales, deals\",\n  \"domain\": \"sales\"\n}"
+          "raw": "{\n  \"account_id\": {{account_id}},\n  \"table_name\": \"sale_order\",\n  \"label\": \"Sales orders\",\n  \"synonyms\": \"orders, sales, deals\",\n  \"domain\": \"sales\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
         },
         "url": "{{base_url}}/api/v1/annotate/table"
       }
@@ -211,7 +256,12 @@
         ],
         "body": {
           "mode": "raw",
-          "raw": "{\n  \"account_id\": {{account_id}},\n  \"table_name\": \"sale_order\",\n  \"column_name\": \"amount_total\",\n  \"label\": \"Total amount\",\n  \"synonyms\": \"revenue, total\"\n}"
+          "raw": "{\n  \"account_id\": {{account_id}},\n  \"table_name\": \"sale_order\",\n  \"column_name\": \"amount_total\",\n  \"label\": \"Total amount\",\n  \"synonyms\": \"revenue, total\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
         },
         "url": "{{base_url}}/api/v1/annotate/column"
       }
