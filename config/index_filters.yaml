@@ -1,0 +1,89 @@
+# ══════════════════════════════════════════════════════════════════════════════
+#  AskYourData — filtres d'indexation des tables (Odoo)
+#  Monté dans schema_service : modifiable sans reconstruire l'image,
+#  puis relancer POST /api/v1/index (avec "dry_run": true pour vérifier).
+#
+#  Ordre d'évaluation pour chaque table :
+#    1. include_tables      → toujours gardée (liste blanche prioritaire)
+#    2. exclude_transient   → modèles transitoires Odoo (wizards)
+#    3. exclude_tables      → noms exacts
+#    4. exclude_prefixes    → débuts de nom
+#    5. exclude_suffixes    → fins de nom
+#    6. exclude_patterns    → motifs glob (*, ?)
+#    7. exclude_unmapped    → table sans modèle Odoo (tables techniques, liaisons)
+#
+#  Ne pas confondre avec la liste de tables INTERDITES dans le SQL (sécurité,
+#  incrément 4) : une table peut être indexée et rester interdite à l'exécution.
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Liste blanche : jamais exclues, quels que soient les motifs ci-dessous
+include_tables:
+  - res_partner
+  - res_company
+  - res_currency
+  - res_currency_rate
+  - res_country
+  - res_country_state
+  - res_partner_category
+  - res_partner_industry
+  - res_users          # nécessaire pour « commercial / salesperson » ; colonnes sensibles exclues plus bas
+
+# Wizards Odoo (ir_model.transient = TRUE)
+exclude_transient: true
+
+# Tables sans modèle Odoo correspondant (liaisons many2many, tables techniques).
+# Ignoré si la base source n'est pas une base Odoo (pas de table ir_model).
+exclude_unmapped: true
+
+exclude_tables:
+  - decimal_precision
+  - res_lang
+  - res_config
+  - res_config_settings
+  - report_paperformat
+  - report_layout
+
+exclude_prefixes:
+  - ir_              # vues QWeb, menus, actions, pièces jointes, paramètres…
+  - mail_            # messagerie, abonnés, activités techniques
+  - bus_
+  - web_
+  - website_         # menus et pages du site web (si installé)
+  - base_import_
+  - base_language_
+  - base_module_
+  - base_partner_merge_
+  - iap_
+  - auth_
+  - digest_
+  - onboarding_
+  - spreadsheet_
+  - sms_
+  - snailmail_
+  - fetchmail_
+  - discuss_
+  - portal_
+  - privacy_
+  - html_
+  - res_groups
+  - res_users_       # journaux, réglages, clés API des utilisateurs (res_users reste via la liste blanche)
+  - res_device
+  - res_config_
+
+exclude_suffixes:
+  - _rel             # tables de liaison many2many
+  - _wizard
+
+exclude_patterns:
+  - "*_wizard_*"
+  - "*_wizard"
+
+# Colonnes jamais indexées (motifs glob, insensibles à la casse)
+exclude_column_patterns:
+  - "*password*"
+  - "*secret*"
+  - "*token*"
+  - "*api_key*"
+  - "*apikey*"
+  - "totp_*"
+  - "signup_*"

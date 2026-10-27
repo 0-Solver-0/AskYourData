@@ -11,7 +11,8 @@ Endpoints :
   POST /api/v1/translate   — question → schéma réduit (sql = null tant que la génération n'est pas branchée)
   GET  /api/v1/health      — healthcheck des services
   GET  /api/v1/schemas     — liste les comptes disponibles
-  POST /api/v1/index       — indexe les tables d'un compte
+  POST /api/v1/index       — indexe les tables d'un compte (dry_run possible)
+  GET  /api/v1/index/report — tables retenues / exclues d'un compte
   POST /api/v1/annotate/table   — annoter une table
   POST /api/v1/annotate/column  — annoter une colonne
 """
@@ -103,28 +104,48 @@ def list_schemas():
 @app.post("/api/v1/index")
 def index():
     """
-    Indexe les tables d'un compte depuis sa BDD source.
-    Body : { "account_id": 1 }
+    Indexe les tables d'un compte depuis sa base source.
+    Body : { "account_id": 1, "dry_run": false, "embeddings": true }
+      dry_run    : true → seulement la liste des tables retenues / exclues, rien n'est écrit
+      embeddings : false → structure seulement (plus rapide)
     """
     data       = request.get_json(silent=True) or {}
     account_id = data.get("account_id")
     if not account_id:
         return jsonify({"error": "'account_id' obligatoire"}), 400
 
+    payload = {"account_id": account_id}
+    for key in ("dry_run", "embeddings"):
+        if key in data:
+            payload[key] = bool(data[key])
+
     try:
-        resp = requests.post(
-            f"{SCHEMA_SERVICE_URL}/index",
-            json={"account_id": account_id},
-            timeout=300,
-        )
-        resp.raise_for_status()
-        return jsonify(resp.json())
+        resp = requests.post(f"{SCHEMA_SERVICE_URL}/index", json=payload, timeout=900)
+        return jsonify(resp.json()), resp.status_code
     except requests.exceptions.ConnectionError:
         return jsonify({"error": "Impossible de joindre le schema_service"}), 503
     except requests.exceptions.Timeout:
         return jsonify({"error": "Timeout — indexation trop longue"}), 504
-    except requests.exceptions.HTTPError as exc:
-        return jsonify({"error": f"Erreur schema_service : {exc}"}), 502
+    except ValueError:
+        return jsonify({"error": "Réponse invalide du schema_service"}), 502
+
+
+@app.get("/api/v1/index/report")
+def index_report():
+    """Tables retenues et exclues (avec raison) d'un compte. Query : ?account_id=1"""
+    account_id = request.args.get("account_id", type=int)
+    if not account_id:
+        return jsonify({"error": "'account_id' obligatoire"}), 400
+    try:
+        resp = requests.get(f"{SCHEMA_SERVICE_URL}/index/report",
+                            params={"account_id": account_id}, timeout=30)
+        return jsonify(resp.json()), resp.status_code
+    except requests.exceptions.ConnectionError:
+        return jsonify({"error": "Impossible de joindre le schema_service"}), 503
+    except requests.exceptions.Timeout:
+        return jsonify({"error": "Timeout schema_service"}), 504
+    except ValueError:
+        return jsonify({"error": "Réponse invalide du schema_service"}), 502
 
 
 @app.post("/api/v1/annotate/table")

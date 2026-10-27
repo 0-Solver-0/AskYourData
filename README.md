@@ -66,21 +66,37 @@ docker compose up -d --build
 curl http://localhost:5000/api/v1/health
 ```
 
-> Le script `postgres/init/01_init.sql` n'est exécuté qu'à la **création** du volume `nl2sql_postgres_data`. Si ce volume existe déjà sans les tables `nl2sql_*`, le recréer (`docker compose down` puis `docker volume rm nl2sql_postgres_data`) ou exécuter le script à la main.
+> Le schéma de la base NL2SQL (`schema_service/schema.sql`) est appliqué par `schema_service` à chaque démarrage : il est idempotent et met aussi à niveau une base existante. Aucune manipulation du volume n'est nécessaire.
 
 ## Première utilisation
 
 ```bash
-# Indexer les tables Odoo (une fois)
+# 1. Vérifier les filtres sans rien écrire : tables retenues / exclues avec la raison
+curl -X POST http://localhost:5000/api/v1/index \
+  -H "Content-Type: application/json" \
+  -d '{"account_id": 1, "dry_run": true}'
+
+# 2. Indexer les tables Odoo (structure, libellés Odoo, embeddings)
 curl -X POST http://localhost:5000/api/v1/index \
   -H "Content-Type: application/json" \
   -d '{"account_id": 1}'
+
+# 3. Relire l'index : volume de chaque table retenue, tables exclues et raisons
+curl "http://localhost:5000/api/v1/index/report?account_id=1"
 
 # Question → schéma réduit (sql = null tant que la génération n'est pas branchée)
 curl -X POST http://localhost:5000/api/v1/translate \
   -H "Content-Type: application/json" \
   -d '{"question": "Who are the top 5 customers by revenue?", "account_id": 1}'
 ```
+
+## Indexation : ce qui est retenu
+
+- Les filtres sont dans [`config/index_filters.yaml`](config/index_filters.yaml) (monté dans le conteneur : modifier puis relancer l'indexation, sans reconstruire l'image).
+- Sont exclus : les wizards Odoo (modèles transitoires), les vues QWeb, menus et tables techniques (`ir_*`, `mail_*`, `website_*`…), les tables de liaison (`*_rel`) et les tables sans modèle Odoo. Une liste blanche (`res_partner`, `res_users`…) est prioritaire.
+- Les colonnes sensibles (`*password*`, `*secret*`, `*token*`…) ne sont jamais indexées.
+- Les libellés Odoo (nom des modèles et des champs, aide, valeurs possibles des champs à choix) sont récupérés automatiquement.
+- Une réindexation n'écrase jamais les annotations manuelles ni les descriptions.
 
 ## Annotations
 
@@ -111,4 +127,6 @@ curl -X POST http://localhost:5000/api/v1/annotate/column \
 
 ## Contribuer
 
-Toute branche part de `devlop` et toute PR cible `devlop` (modèle de PR fourni). La CI vérifie le lint (`ruff check .`) et la validité des fichiers compose.
+Toute branche part de `devlop` et toute PR cible `devlop` (modèle de PR fourni). La CI vérifie le lint (`ruff check .`), les tests (`pytest`, avec PostgreSQL + pgvector) et la validité des fichiers compose.
+
+Tests en local : `pip install -r requirements-dev.txt` puis `pytest -q` (les tests d'intégration nécessitent `TEST_PG_DSN` vers un PostgreSQL avec pgvector).
