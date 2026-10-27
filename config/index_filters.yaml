@@ -85,6 +85,7 @@ exclude_prefixes:
   - barcode_
   - crm_iap_                # paramétrage de la génération de pistes (IAP)
   - crm_lead_scoring_       # statistiques internes du scoring de pistes
+  - sale_order_template     # modèles de devis (paramétrage)
 
 exclude_suffixes:
   - _rel             # tables de liaison many2many

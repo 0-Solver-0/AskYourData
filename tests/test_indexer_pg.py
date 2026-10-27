@@ -37,7 +37,9 @@ CREATE TABLE ir_model_fields_selection (id serial PRIMARY KEY, field_id int, val
     name jsonb, sequence int);
 CREATE TABLE ir_ui_view (id serial PRIMARY KEY, arch text);
 CREATE TABLE mail_message (id serial PRIMARY KEY, body text);
-CREATE TABLE res_partner (id serial PRIMARY KEY, name varchar, email varchar, signup_token varchar);
+CREATE TABLE res_country (id serial PRIMARY KEY, name jsonb, code varchar);
+CREATE TABLE res_partner (id serial PRIMARY KEY, name varchar, email varchar, signup_token varchar,
+    country_id int REFERENCES res_country(id));
 CREATE TABLE res_users (id serial PRIMARY KEY, login varchar, password varchar,
     partner_id int REFERENCES res_partner(id));
 CREATE TABLE res_users_log (id serial PRIMARY KEY, create_uid int REFERENCES res_users(id));
@@ -52,6 +54,7 @@ CREATE TABLE custom_table_without_model (id serial PRIMARY KEY, x int);
 
 INSERT INTO ir_model (model, name, transient) VALUES
   ('res.partner', '{"en_US": "Contact"}', false),
+  ('res.country', '{"en_US": "Country"}', false),
   ('res.users', '{"en_US": "User"}', false),
   ('res.users.log', '{"en_US": "Users Log"}', false),
   ('sale.order', '{"en_US": "Sales Order"}', false),
@@ -74,7 +77,8 @@ SELECT id, 'draft', '{"en_US": "Quotation"}'::jsonb, 1 FROM ir_model_fields WHER
 UNION ALL
 SELECT id, 'sale', '{"en_US": "Sales Order"}'::jsonb, 2 FROM ir_model_fields WHERE model='sale.order' AND name='state';
 
-INSERT INTO res_partner (name) VALUES ('Azure Interior'), ('Deco Addict');
+INSERT INTO res_country (name, code) VALUES ('{"en_US": "Morocco"}', 'MA'), ('{"en_US": "France"}', 'FR');
+INSERT INTO res_partner (name, country_id) VALUES ('Azure Interior', 1), ('Deco Addict', 2);
 INSERT INTO res_users (login, partner_id) VALUES ('admin', 1);
 INSERT INTO sale_order (name, state, amount_total, partner_id, user_id) VALUES ('S001', 'sale', 100, 2, 1);
 """
@@ -139,7 +143,7 @@ def _tables(nl, account_id):
 def test_dry_run_writes_nothing(dbs):
     src, nl, account = dbs
     report = index_account(nl, src, account, fake_embed, load_filter_config(CONFIG_PATH), dry_run=True)
-    assert sorted(report["retained_tables"]) == ["res_partner", "res_users", "sale_order", "sale_order_line"]
+    assert sorted(report["retained_tables"]) == ["res_country", "res_partner", "res_users", "sale_order", "sale_order_line"]
     assert report["has_odoo_metadata"] is True
     assert _tables(nl, account["id"]) == []
 
@@ -147,7 +151,7 @@ def test_dry_run_writes_nothing(dbs):
 def test_full_index(dbs):
     src, nl, account = dbs
     report = index_account(nl, src, account, fake_embed, load_filter_config(CONFIG_PATH))
-    assert report["indexed"] == 4 and report["failed"] == []
+    assert report["indexed"] == 5 and report["failed"] == []
 
     reasons = {e["table_name"]: e["reason"] for e in index_report(nl, account["id"])["excluded_tables"]}
     assert reasons["sale_advance_payment_inv"] == "transient_model"
@@ -259,3 +263,13 @@ def test_default_account_follows_configuration(dbs):
 
     # Remet le compte de test dans son état d'origine
     sync_default_account(nl, {k: account[k] for k in params})
+
+
+def test_reference_values_are_indexed(dbs):
+    src, nl, account = dbs
+    index_account(nl, src, account, fake_embed, load_filter_config(CONFIG_PATH))
+    with nl.cursor() as cur:
+        cur.execute("SELECT table_name, value, normalized FROM nl2sql_values ORDER BY 1, 2")
+        rows = cur.fetchall()
+    assert ("res_country", "Morocco", "morocco") in rows          # JSONB lu en anglais
+    assert ("res_partner", "Azure Interior", "azure interior") in rows

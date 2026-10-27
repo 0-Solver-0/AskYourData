@@ -28,11 +28,17 @@ from psycopg2 import sql
 
 from .filters import FilterConfig, TableInfo, decide_table, keep_column
 from .odoo_meta import ModelMeta, load_odoo_metadata
+from .search import normalize_text
 from .text_builders import build_column_text, build_table_text
 
 logger = logging.getLogger("schema_service.indexer")
 
 EmbedFn = Callable[[list[str]], list[list[float]]]
+
+# Valeurs de référence : colonne « name » des petites tables (pays, étapes, catégories, clients…)
+VALUE_COLUMNS = ("name",)
+VALUE_MAX_ROWS = 2000
+VALUE_MIN_LENGTH = 3
 
 
 # ── Lecture de la structure source (en une fois pour tout le schéma) ─────────
@@ -209,6 +215,7 @@ def index_account(conn, src, account: dict, embed: Optional[EmbedFn], cfg: Filte
     kept_set = set(kept)
 
     indexed, failed = 0, []
+    row_counts: dict[str, Optional[int]] = {}
     for table_name in kept:
         try:
             m = meta.get(table_name)
@@ -220,6 +227,7 @@ def index_account(conn, src, account: dict, embed: Optional[EmbedFn], cfg: Filte
 
             with src.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as scur:
                 row_count = _row_count(scur, schema, table_name)
+            row_counts[table_name] = row_count
 
             with conn.cursor() as cur:
                 cur.execute(
@@ -312,6 +320,8 @@ def index_account(conn, src, account: dict, embed: Optional[EmbedFn], cfg: Filte
         )
     conn.commit()
 
+    report["values_indexed"] = index_values(conn, src, schema, account_id, kept, columns_by_table, row_counts)
+
     report.update({
         "indexed": indexed,
         "failed": failed,
@@ -321,6 +331,51 @@ def index_account(conn, src, account: dict, embed: Optional[EmbedFn], cfg: Filte
     logger.info("Indexation : %d/%d tables retenues indexées, %d exclues, %d échecs, %ss",
                 indexed, len(kept), len(excluded), len(failed), report["elapsed_s"])
     return report
+
+
+def index_values(conn, src, schema: str, account_id: int, tables: list[str],
+                 columns_by_table: dict[str, list[dict]], row_counts: dict[str, Optional[int]]) -> int:
+    """
+    Enregistre les valeurs de la colonne « name » des petites tables (≤ VALUE_MAX_ROWS lignes) :
+    pays, états, étapes CRM, catégories, équipes, clients de démo… La recherche de schéma
+    reconnaît ainsi une valeur citée dans la question (« Morocco » → res_country.name).
+    Les champs traduisibles (JSONB) sont lus en anglais.
+    """
+    rows: list[tuple] = []
+    for table in tables:
+        count = row_counts.get(table)
+        if not count or count > VALUE_MAX_ROWS:
+            continue
+        cols = {c["column_name"]: c for c in columns_by_table.get(table, [])}
+        for column in VALUE_COLUMNS:
+            col = cols.get(column)
+            if not col or col["data_type"] not in ("character varying", "text", "jsonb"):
+                continue
+            ident = sql.SQL("{}.{}").format(sql.Identifier(schema), sql.Identifier(table))
+            expr = (sql.SQL("{}->>'en_US'").format(sql.Identifier(column)) if col["data_type"] == "jsonb"
+                    else sql.Identifier(column))
+            try:
+                with src.cursor() as scur:
+                    scur.execute(sql.SQL("SELECT DISTINCT {} FROM {} WHERE {} IS NOT NULL").format(expr, ident, expr))
+                    for (value,) in scur.fetchall():
+                        value = " ".join(str(value).split())
+                        norm = normalize_text(value)
+                        if len(norm) >= VALUE_MIN_LENGTH:
+                            rows.append((account_id, table, column, value, norm))
+            except Exception as exc:  # noqa: BLE001 — une table illisible ne bloque pas l'indexation
+                logger.warning("Valeurs ignorées pour %s.%s : %s", table, column, exc)
+                src.rollback()
+
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM nl2sql_values WHERE account_id = %s", (account_id,))
+        psycopg2.extras.execute_batch(
+            cur,
+            """INSERT INTO nl2sql_values (account_id, table_name, column_name, value, normalized)
+               VALUES (%s, %s, %s, %s, %s) ON CONFLICT DO NOTHING""",
+            rows,
+        )
+    conn.commit()
+    return len(rows)
 
 
 def index_report(conn, account_id: int) -> dict:
