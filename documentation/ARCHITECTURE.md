@@ -73,6 +73,8 @@
 
 **Pourquoi deux modèles différents :** Muse Spark Open est une version distincte de Muse Spark (même base que Spark 1.3, post-entraînement de sécurité supplémentaire, probablement servie en 4 bits sur Baseten `[À VÉRIFIER]`), un peu en retrait sur les évaluations publiques. Cet écart ne pèse pas sur la préparation (tâches simples et cadrées) mais compte pour le SQL : le modèle le plus fort est donc réservé au rôle `SQL`.
 
+**Prix identiques :** Muse Spark 1.3 sur l'API Meta et Muse Spark Open sur Baseten coûtent tous deux 1,25 $ (entrée), 0,15 $ (entrée en cache) et 4,25 $ (sortie) par million de tokens. Le choix de Baseten pour `PREP` ne se justifie donc pas par le prix, mais par **la répartition des crédits** (150 $ Meta pour le SQL, 100 $ Baseten demandés pour la préparation) et **la redondance** (un fournisseur peut servir de secours à l'autre). Si les crédits Baseten ne sont pas attribués, `PREP_PROVIDER=meta_spark` est une option à même coût, avec un modèle plus fort.
+
 ---
 
 ## 3. Pipeline d'indexation (une fois, puis incrémental)
@@ -302,11 +304,12 @@ Chaque fournisseur est décrit une seule fois dans un fichier versionné, `confi
 
 ```yaml
 meta_spark:
-  base_url: <URL de l'API Meta>          # [À VÉRIFIER]
-  model: <nom exact de Muse Spark>       # [À VÉRIFIER]
+  base_url: <URL de l'API Meta>          # [À VÉRIFIER dans la documentation]
+  model: <identifiant API de Muse Spark 1.3>  # nom affiché « Muse Spark 1.3 » ; identifiant exact [À VÉRIFIER]
   api_key_env: META_API_KEY
+  context_tokens: 1000000
   reasoning: {param: <à vérifier>, value: low}
-  price_per_mtok: {input: <à vérifier>, output: <à vérifier>}
+  price_per_mtok: {input: 1.25, cached_input: 0.15, output: 4.25}
 
 baseten_spark_open:
   base_url: https://inference.baseten.co/v1
@@ -488,7 +491,7 @@ Chaque passage consomme des crédits : mesurer le coût réel du premier passage
 
 ## 13. Points ouverts
 
-- API Meta (Muse Spark) : accès depuis le Maroc, nom exact du modèle, format (compatible OpenAI ?), sortie structurée, cache de prompt, limites de débit, prix.
+- API Meta (Muse Spark 1.3) : accès depuis le Maroc, URL et identifiant API exact du modèle, format (compatible OpenAI ?), paramètre de raisonnement, sortie structurée, limites de débit. Prix connu : 1,25 $ / 0,15 $ (cache) / 4,25 $ par million de tokens ; contexte 1 M tokens.
 - Baseten : nom du paramètre de raisonnement, précision servie (4 bits ?), crédits attribués.
 - Fireworks : crédits attribués (secours `PREP`), prix réel de Muse Glimmer.
 - Odoo 18 : champ `transient` et tables `ir_model*` à confirmer ; modules installés dans la base de démo.
