@@ -13,7 +13,7 @@
 | D1 | **Plus de service de traduction.** Les questions sont posées en anglais. | Suppression de `rewrite_service` (Qwen2.5-3B). |
 | D2 | **Aucun LLM en local.** Tous les LLM passent par des API. | Suppression de `model_service` (SQLCoder-7B-2), du `Dockerfile` GPU et du dossier `models/` (LLM). Plus besoin de GPU pour lancer le projet. |
 | D3 | **On garde Odoo, PostgreSQL Odoo et PostgreSQL + pgvector.** | Trois conteneurs de données inchangés. |
-| D4 | **Deux rôles LLM, chacun à sa place.** Rôle `PREP` (préparation) : enrichissement des tables et structuration des questions, par défaut **Muse Spark Open sur Baseten**. Rôle `SQL` : génération et correction du SQL, par défaut **Muse Spark sur l'API Meta**. | Le modèle le plus fort est réservé au SQL ; il ne reçoit qu'un contexte réduit et précis préparé en amont. |
+| D4 | **Deux rôles LLM, chacun à sa place.** Rôle `PREP` (préparation) : enrichissement des tables et structuration des questions, par défaut **Muse Spark sur l'API Meta** (secours : Muse Spark Open sur Baseten). Rôle `SQL` : génération et correction du SQL, par défaut **Muse Spark sur l'API Meta**. | Le SQL ne reçoit qu'un contexte réduit et précis préparé en amont. Les deux rôles restent séparés pour pouvoir changer de modèle indépendamment. |
 | D5 | **Tout ce qui peut être fait en code est fait en code**, avant tout appel d'API. | Cache, filtrage, recherche vectorielle, jointures, validation et formatage restent locaux. |
 | D6 | **Fournisseurs interchangeables par rôle.** Chaque rôle choisit un profil de fournisseur par configuration, avec un profil de secours (§ 7). | Bascule vers un autre hébergeur ou un serveur local en changeant une ligne de configuration, sans toucher au code. |
 | D7 | **Embedder local conservé** (CPU, petit modèle). | Recherche de schéma gratuite et rapide, sans dépendance réseau. |
@@ -32,7 +32,7 @@
                                                                    │
 ┌────────────────────────────── api_service :5000 ─────────────────┴──┐
 │ Orchestrateur (Flask + Gunicorn, CPU)                               │
-│  • client LLM par rôle ─ PREP ─► Baseten  : Muse Spark Open         │
+│  • client LLM par rôle ─ PREP ─► Meta API : Muse Spark (déf.)       │
 │                        └ SQL ──► Meta API : Muse Spark              │
 │  • validation SQL, exécution, correction, formatage, télémétrie     │
 └───────────────┬─────────────────────────────────────────────────────┘
@@ -71,7 +71,9 @@
 
 **Principe de sûreté :** aucun modèle ne voit de données réelles (lignes de résultat). Le modèle `PREP` voit la structure des tables et la question ; le modèle `SQL` voit la question et un schéma réduit. Aucun chiffre de la réponse n'est écrit par un modèle.
 
-**Pourquoi deux modèles différents :** Muse Spark Open est une version distincte de Muse Spark (même base que Spark 1.3, post-entraînement de sécurité supplémentaire, probablement servie en 4 bits sur Baseten `[À VÉRIFIER]`), un peu en retrait sur les évaluations publiques. Cet écart ne pèse pas sur la préparation (tâches simples et cadrées) mais compte pour le SQL : le modèle le plus fort est donc réservé au rôle `SQL`.
+**Pourquoi deux rôles séparés :** Muse Spark Open est une version distincte de Muse Spark (même base que Spark 1.3, post-entraînement de sécurité supplémentaire, probablement servie en 4 bits sur Baseten `[À VÉRIFIER]`), un peu en retrait sur les évaluations publiques. Cet écart ne pèse pas sur la préparation (tâches simples et cadrées) mais compte pour le SQL : le modèle le plus fort est donc réservé au rôle `SQL`.
+
+**Prix identiques :** Muse Spark 1.3 sur l'API Meta et Muse Spark Open sur Baseten coûtent tous deux 1,25 $ (entrée), 0,15 $ (entrée en cache) et 4,25 $ (sortie) par million de tokens. Utiliser Baseten pour `PREP` ne ferait donc rien économiser. **Choix retenu (27 oct) : `PREP` utilise aussi Muse Spark sur l'API Meta** (modèle plus fort, coût de l'enrichissement estimé à 1–1,50 $ pour ~200 tables). Muse Spark Open sur Baseten reste le secours de chaque rôle et pourra reprendre `PREP` pour préserver les crédits Meta si les crédits Baseten sont attribués.
 
 ---
 
@@ -121,7 +123,7 @@ Pour chaque table retenue, récupérer ce qu'Odoo sait déjà `[À VÉRIFIER : n
 | Volume | nombre de lignes | ~N |
 
 ### 3.4 Enrichissement par le modèle `PREP` (une fois)
-Modèle par défaut : Muse Spark Open sur Baseten, **raisonnement réglé sur « low »** (le défaut du modèle est « xhigh », coûteux en tokens et en temps).
+Modèle par défaut : Muse Spark 1.3 sur l'API Meta (secours : Muse Spark Open sur Baseten), **raisonnement réglé sur « low »** (le défaut de Muse Spark Open est « xhigh », coûteux en tokens et en temps).
 
 **Un appel par table**, avec une **fiche de structure** : la table, ses colonnes, leurs libellés Odoo, les valeurs des champs à choix et le voisinage (tables pointées et tables qui pointent vers elle, avec leurs libellés). **Aucune donnée réelle n'est envoyée.**
 
@@ -220,7 +222,7 @@ question (EN)
 ```
 
 ### 5.1 Étape 1 — Structuration par le modèle `PREP`
-Le modèle `PREP` (Muse Spark Open par défaut) reçoit **uniquement la question** (pas de schéma). Il ne peut donc pas inventer de table : il produit des termes métier, et ce sont pgvector et le code qui choisissent les vraies tables.
+Le modèle `PREP` (Muse Spark par défaut) reçoit **uniquement la question** (pas de schéma). Il ne peut donc pas inventer de table : il produit des termes métier, et ce sont pgvector et le code qui choisissent les vraies tables.
 
 ```json
 {
@@ -292,7 +294,7 @@ Le modèle `PREP` (Muse Spark Open par défaut) reçoit **uniquement la question
 ### 7.1 Deux rôles, configurés séparément
 | Rôle | Utilisé pour | Profil par défaut | Secours |
 |---|---|---|---|
-| `PREP` | Enrichissement des tables (§ 3.4) + structuration des questions (§ 5.1) | `baseten_spark_open` — Muse Spark Open sur Baseten | `fireworks_glimmer` (si crédits Fireworks) |
+| `PREP` | Enrichissement des tables (§ 3.4) + structuration des questions (§ 5.1) | `meta_spark` — Muse Spark sur l'API Meta | `baseten_spark_open` (si crédits Baseten) |
 | `SQL` | Génération et correction du SQL (§ 5.4–5.5) | `meta_spark` — Muse Spark sur l'API Meta | `baseten_spark_open` |
 
 Les rôles sont nommés d'après ce qu'ils font, pas d'après un modèle : changer de modèle ne change ni le code ni les noms de variables.
@@ -302,11 +304,12 @@ Chaque fournisseur est décrit une seule fois dans un fichier versionné, `confi
 
 ```yaml
 meta_spark:
-  base_url: <URL de l'API Meta>          # [À VÉRIFIER]
-  model: <nom exact de Muse Spark>       # [À VÉRIFIER]
+  base_url: <URL de l'API Meta>          # [À VÉRIFIER dans la documentation]
+  model: <identifiant API de Muse Spark 1.3>  # nom affiché « Muse Spark 1.3 » ; identifiant exact [À VÉRIFIER]
   api_key_env: META_API_KEY
+  context_tokens: 1000000
   reasoning: {param: <à vérifier>, value: low}
-  price_per_mtok: {input: <à vérifier>, output: <à vérifier>}
+  price_per_mtok: {input: 1.25, cached_input: 0.15, output: 4.25}
 
 baseten_spark_open:
   base_url: https://inference.baseten.co/v1
@@ -330,8 +333,8 @@ local:
 
 Le `.env` ne fait que **choisir** un profil par rôle et fournir les clés :
 ```
-PREP_PROVIDER=baseten_spark_open
-PREP_FALLBACK=fireworks_glimmer
+PREP_PROVIDER=meta_spark
+PREP_FALLBACK=baseten_spark_open
 SQL_PROVIDER=meta_spark
 SQL_FALLBACK=baseten_spark_open
 ```
@@ -394,8 +397,8 @@ EXEC_DB_USER=askyourdata          # rôle read-only
 EXEC_DB_PASSWORD=
 
 # Choix des fournisseurs par rôle (profils définis dans config/llm_providers.yaml)
-PREP_PROVIDER=baseten_spark_open
-PREP_FALLBACK=fireworks_glimmer
+PREP_PROVIDER=meta_spark
+PREP_FALLBACK=baseten_spark_open
 SQL_PROVIDER=meta_spark
 SQL_FALLBACK=baseten_spark_open
 
@@ -488,7 +491,7 @@ Chaque passage consomme des crédits : mesurer le coût réel du premier passage
 
 ## 13. Points ouverts
 
-- API Meta (Muse Spark) : accès depuis le Maroc, nom exact du modèle, format (compatible OpenAI ?), sortie structurée, cache de prompt, limites de débit, prix.
+- API Meta (Muse Spark 1.3) : accès depuis le Maroc, URL et identifiant API exact du modèle, format (compatible OpenAI ?), paramètre de raisonnement, sortie structurée, limites de débit. Prix connu : 1,25 $ / 0,15 $ (cache) / 4,25 $ par million de tokens ; contexte 1 M tokens.
 - Baseten : nom du paramètre de raisonnement, précision servie (4 bits ?), crédits attribués.
 - Fireworks : crédits attribués (secours `PREP`), prix réel de Muse Glimmer.
 - Odoo 18 : champ `transient` et tables `ir_model*` à confirmer ; modules installés dans la base de démo.
