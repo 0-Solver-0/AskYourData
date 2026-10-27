@@ -25,6 +25,7 @@ from flask import Flask, jsonify, request
 from pgvector.psycopg2 import register_vector
 from sentence_transformers import SentenceTransformer
 
+from .accounts import default_account_from_env, sync_default_account
 from .filters import load_filter_config
 from .indexer import index_account, index_report, reindex_table_embeddings
 from .text_builders import column_display_label
@@ -502,6 +503,11 @@ def reindex():
 
 # ── Démarrage ──────────────────────────────────────────────────────────────
 ensure_schema()
+_conn = psycopg2.connect(**NL2SQL_DB)
+_account = sync_default_account(_conn, default_account_from_env())
+_conn.close()
+logger.info("✅ Compte par défaut : %s@%s:%s/%s (schéma %s)", _account["pg_user"], _account["pg_host"],
+            _account["pg_port"], _account["pg_db"], _account["pg_schema"])
 load_embedder()
 
 

@@ -56,8 +56,8 @@ huggingface-cli download sentence-transformers/all-MiniLM-L6-v2 --local-dir mode
 # 3. Odoo en premier (crée aussi le réseau nl2sql_net)
 docker compose -f docker-compose.odoo.yml up -d
 
-# 4. Sur http://localhost:8069, créer la base nommée "odoo"
-#    avec "Load demonstration data" coché
+# 4. Sur http://localhost:8069, créer une base avec "Load demonstration data" coché,
+#    puis reporter son nom dans .env : SOURCE_DB_NAME=<nom de la base>
 
 # 5. Services AskYourData
 docker compose up -d --build
@@ -66,6 +66,8 @@ docker compose up -d --build
 curl http://localhost:5000/api/v1/health
 ```
 
+> La connexion à la base source (compte par défaut, `account_id = 1`) vient des variables `SOURCE_DB_*` du `.env` et est réappliquée à chaque démarrage de `schema_service` : pour changer de base, modifier le `.env` puis `docker compose up -d`.
+>
 > Le schéma de la base NL2SQL (`schema_service/schema.sql`) est appliqué par `schema_service` à chaque démarrage : il est idempotent et met aussi à niveau une base existante. Aucune manipulation du volume n'est nécessaire.
 
 ## Première utilisation

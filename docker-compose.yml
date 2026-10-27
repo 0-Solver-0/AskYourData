@@ -67,6 +67,12 @@ services:
       NL2SQL_DB_NAME:      nl2sql
       NL2SQL_DB_USER:      nl2sql
       NL2SQL_DB_PASSWORD:  ${NL2SQL_DB_PASSWORD:-nl2sql}
+      # Base source du compte par défaut (id=1), synchronisée au démarrage
+      SOURCE_DB_HOST:      ${SOURCE_DB_HOST:-postgres_odoo}
+      SOURCE_DB_PORT:      ${SOURCE_DB_PORT:-5432}
+      SOURCE_DB_NAME:      ${SOURCE_DB_NAME:-odoo}
+      SOURCE_DB_USER:      ${SOURCE_DB_USER:-odoo}
+      SOURCE_DB_SCHEMA:    ${SOURCE_DB_SCHEMA:-public}
       SOURCE_DB_PASSWORD:  ${ODOO_DB_PASSWORD:-odoo}
       TOP_K_TABLES:        "10"
       TOP_K_COLUMNS:       "20"
