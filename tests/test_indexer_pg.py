@@ -237,3 +237,25 @@ def test_reindex_table_embeddings(dbs):
     with nl.cursor() as cur:
         cur.execute("SELECT bool_and(embedding IS NOT NULL) FROM nl2sql_columns WHERE table_id = %s", (table_id,))
         assert cur.fetchone()[0] is True
+
+
+def test_default_account_follows_configuration(dbs):
+    from schema_service.accounts import sync_default_account
+
+    _, nl, account = dbs
+    params = {"pg_host": "odoo_host", "pg_port": 5432, "pg_db": "Meta_Global_AI_Hackathon",
+              "pg_user": "odoo", "pg_schema": "public"}
+    row = sync_default_account(nl, params)
+    assert row["id"] == 1 and row["pg_db"] == "Meta_Global_AI_Hackathon"
+
+    # Idempotent, un seul compte, et la séquence reste utilisable pour un nouveau compte
+    sync_default_account(nl, params)
+    with nl.cursor() as cur:
+        cur.execute("SELECT count(*) FROM nl2sql_accounts")
+        assert cur.fetchone()[0] == 1
+        cur.execute("INSERT INTO nl2sql_accounts (name) VALUES ('other') RETURNING id")
+        assert cur.fetchone()[0] == 2
+    nl.rollback()
+
+    # Remet le compte de test dans son état d'origine
+    sync_default_account(nl, {k: account[k] for k in params})
