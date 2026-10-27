@@ -6,8 +6,10 @@
 #  Prérequis : démarrer d'abord docker-compose.odoo.yml, qui crée le réseau nl2sql_net
 # ══════════════════════════════════════════════════════════════════════════════
 
+# Même Dockerfile pour les deux services, sans nom d'image commun : chaque service
+# reçoit sa propre étiquette (le second build réutilise le cache, il est quasi instantané).
+# Un nom d'image partagé fait échouer les builds parallèles (« image … already exists »).
 x-common-cpu: &common-cpu
-  image: askyourdata-cpu:latest
   build:
     context: .
     dockerfile: Dockerfile.cpu
