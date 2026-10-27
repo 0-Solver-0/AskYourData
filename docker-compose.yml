@@ -19,6 +19,10 @@ x-common-cpu: &common-cpu
   networks:
     - nl2sql_net
 
+# Nom de projet explicite : les deux fichiers sont dans le même dossier ; sans nom distinct,
+# « --remove-orphans » sur l'un supprimerait les conteneurs de l'autre.
+name: askyourdata
+
 services:
 
   # ─────────────────────────────────────────────────────────────────────────
