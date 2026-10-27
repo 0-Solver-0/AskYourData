@@ -1,85 +1,85 @@
-# NL2SQL v2
+# AskYourData
 
-Pipeline multi-agent NL → SQL sur Odoo 18.
+Parler avec ses données : une question en anglais sur Odoo 18, une réponse tirée directement de la base, sans écrire de SQL.
+
+Architecture complète et décisions : [`documentation/ARCHITECTURE.md`](documentation/ARCHITECTURE.md).
+
+> **État : en construction.** La recherche de schéma fonctionne ; la génération SQL (Muse Spark via API) et l'exécution sont en cours de branchement. `/api/v1/translate` renvoie pour l'instant le schéma réduit, avec `sql: null`.
 
 ## Architecture
 
 ```
-Question utilisateur (français)
-        │
-        ▼
-rewrite_service  :8003  Qwen2.5 3B   GPU ~3 Go   traduit FR→EN
-        │
-        ▼
-schema_service   :8002  all-MiniLM   CPU         sélectionne tables + colonnes + relations
-        │
-        ▼
-model_service    :8001  SQLCoder 7B  GPU ~7 Go   génère le SQL
-        │
-        ▼
-api_service      :5000  Flask        CPU         orchestre + retourne résultat
+question (EN)
+   │
+   ▼
+api_service      :5000  Flask + Gunicorn   orchestre le pipeline
+   │
+   ├─► schema_service :8002  embedder local (CPU) + pgvector   tables, colonnes, relations
+   └─► LLM via API (à venir)  rôle PREP : Muse Spark Open (Baseten) · rôle SQL : Muse Spark (API Meta)
+
+postgres_nl2sql  :5433  pgvector/pg16       métadonnées + embeddings
+postgres_odoo    :5432  postgres:16-alpine  base Odoo
+odoo             :8069  odoo:18.0
 ```
+
+Aucun GPU n'est nécessaire : les LLM sont appelés via API.
 
 ## Structure
 
 ```
-nl2sql/
-├── Dockerfile              ← GPU  (model_service + rewrite_service)
-├── Dockerfile.cpu          ← CPU  (schema_service + api_service)
-├── docker-compose.yml      ← services NL2SQL + postgres_nl2sql
-├── docker-compose.odoo.yml ← Odoo 18 + postgres_odoo
+.
+├── Dockerfile.cpu           image unique (schema_service + api_service)
+├── docker-compose.yml       postgres_nl2sql + schema_service + api_service
+├── docker-compose.odoo.yml  Odoo 18 + postgres_odoo (crée le réseau nl2sql_net)
 ├── .env.example
-├── models/
-│   ├── sqlcoder-7b-2/
-│   ├── qwen2.5-3b-instruct/
+├── models/                  embedder local (non versionné)
 │   └── all-MiniLM-L6-v2/
-├── model_service/
-│   └── server.py
-├── rewrite_service/
-│   └── server.py
-├── schema_service/
-│   └── server.py
-├── api_service/
-│   └── app.py
-├── postgres/
-│   └── init/
-│       └── 01_init.sql
-└── odoo/
-    ├── config/odoo.conf
-    └── addons/
+├── schema_service/server.py
+├── api_service/app.py
+├── postgres/init/01_init.sql
+├── odoo/
+│   ├── config/odoo.conf
+│   └── addons/
+└── documentation/
 ```
 
 ## Démarrage
 
 ```bash
-# 1. Copier les variables d'environnement
+# 1. Variables d'environnement
 cp .env.example .env
 
-# 2. Démarrer Odoo en premier
+# 2. Embedder local (une fois, ~90 Mo)
+pip install -U "huggingface_hub[cli]"
+huggingface-cli download sentence-transformers/all-MiniLM-L6-v2 --local-dir models/all-MiniLM-L6-v2
+
+# 3. Odoo en premier (crée aussi le réseau nl2sql_net)
 docker compose -f docker-compose.odoo.yml up -d
 
-# 3. Attendre qu'Odoo soit prêt, puis aller sur http://localhost:8069
-#    Créer la base avec "Load demonstration data" coché
+# 4. Sur http://localhost:8069, créer la base nommée "odoo"
+#    avec "Load demonstration data" coché
 
-# 4. Démarrer NL2SQL
-docker compose up -d
+# 5. Services AskYourData
+docker compose up -d --build
 
-# 5. Vérifier l'état
+# 6. Vérifier l'état
 curl http://localhost:5000/api/v1/health
 ```
+
+> Le script `postgres/init/01_init.sql` n'est exécuté qu'à la **création** du volume `nl2sql_postgres_data`. Si ce volume existe déjà sans les tables `nl2sql_*`, le recréer (`docker compose down` puis `docker volume rm nl2sql_postgres_data`) ou exécuter le script à la main.
 
 ## Première utilisation
 
 ```bash
-# Indexer les tables Odoo (à faire une seule fois)
+# Indexer les tables Odoo (une fois)
 curl -X POST http://localhost:5000/api/v1/index \
   -H "Content-Type: application/json" \
   -d '{"account_id": 1}'
 
-# Traduire une question
+# Question → schéma réduit (sql = null tant que la génération n'est pas branchée)
 curl -X POST http://localhost:5000/api/v1/translate \
   -H "Content-Type: application/json" \
-  -d '{"question": "Quels sont les 5 meilleurs clients ?", "account_id": 1}'
+  -d '{"question": "Who are the top 5 customers by revenue?", "account_id": 1}'
 ```
 
 ## Annotations
@@ -91,9 +91,9 @@ curl -X POST http://localhost:5000/api/v1/annotate/table \
   -d '{
     "account_id": 1,
     "table_name": "sale_order",
-    "label":      "Commandes clients",
-    "synonyms":   "commandes, orders, ventes, transactions",
-    "domain":     "commercial"
+    "label":      "Sales orders",
+    "synonyms":   "orders, sales, transactions",
+    "domain":     "sales"
   }'
 
 # Annoter une colonne
@@ -103,17 +103,12 @@ curl -X POST http://localhost:5000/api/v1/annotate/column \
     "account_id":  1,
     "table_name":  "sale_order",
     "column_name": "amount_total",
-    "label":       "Montant total",
-    "synonyms":    "total, montant, panier, chiffre d affaires",
+    "label":       "Total amount",
+    "synonyms":    "total, amount, revenue",
     "display":     true
   }'
 ```
 
-## VRAM
+## Contribuer
 
-```
-SQLCoder 7B   float16   7.0 Go
-Qwen2.5 3B    float16   3.0 Go
-─────────────────────────────
-Total                  10.0 Go / 11.6 Go  ✅
-```
+Toute branche part de `devlop` et toute PR cible `devlop` (modèle de PR fourni). La CI vérifie le lint (`ruff check .`) et la validité des fichiers compose.

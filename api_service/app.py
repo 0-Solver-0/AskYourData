@@ -1,27 +1,26 @@
 """
 api_service/app.py
 ------------------
-Orchestrateur du pipeline NL2SQL v2.
+Orchestrateur du pipeline AskYourData (architecture v3, voir documentation/ARCHITECTURE.md).
 
-Pipeline :
-  1. rewrite_service  — traduit et clarifie la question
-  2. schema_service   — identifie tables, colonnes, relations
-  3. model_service    — génère le SQL sur schéma minimal
+Pipeline actuel :
+  1. schema_service   — identifie tables, colonnes, relations
+  2. génération SQL   — pas encore branchée (rôle LLM `SQL`, incréments 6-7)
 
 Endpoints :
-  POST /api/v1/translate   — pipeline complet NL → SQL
-  GET  /api/v1/health      — healthcheck tous les services
+  POST /api/v1/translate   — question → schéma réduit (sql = null tant que la génération n'est pas branchée)
+  GET  /api/v1/health      — healthcheck des services
   GET  /api/v1/schemas     — liste les comptes disponibles
   POST /api/v1/index       — indexe les tables d'un compte
   POST /api/v1/annotate/table   — annoter une table
   POST /api/v1/annotate/column  — annoter une colonne
 """
 
-import os
 import logging
-import requests
+import os
 
-from flask import Flask, request, jsonify
+import requests
+from flask import Flask, jsonify, request
 
 # ── Logging ────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -31,8 +30,6 @@ logging.basicConfig(
 logger = logging.getLogger("api_service")
 
 # ── Config ─────────────────────────────────────────────────────────────────
-MODEL_SERVICE_URL   = os.getenv("MODEL_SERVICE_URL",   "http://model_service:8001")
-REWRITE_SERVICE_URL = os.getenv("REWRITE_SERVICE_URL", "http://rewrite_service:8003")
 SCHEMA_SERVICE_URL  = os.getenv("SCHEMA_SERVICE_URL",  "http://schema_service:8002")
 SECRET_KEY          = os.getenv("SECRET_KEY",          "dev-secret")
 
@@ -41,16 +38,6 @@ app.config["SECRET_KEY"] = SECRET_KEY
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
-
-def call_rewrite(question: str) -> dict:
-    resp = requests.post(
-        f"{REWRITE_SERVICE_URL}/rewrite",
-        json={"question": question},
-        timeout=30,
-    )
-    resp.raise_for_status()
-    return resp.json()
-
 
 def call_schema(question: str, account_id: int) -> dict:
     resp = requests.post(
@@ -62,24 +49,12 @@ def call_schema(question: str, account_id: int) -> dict:
     return resp.json()
 
 
-def call_model(question: str, schema: str) -> dict:
-    resp = requests.post(
-        f"{MODEL_SERVICE_URL}/generate",
-        json={"question": question, "schema": schema},
-        timeout=120,
-    )
-    resp.raise_for_status()
-    return resp.json()
-
-
 # ── Endpoints ───────────────────────────────────────────────────────────────
 
 @app.get("/api/v1/health")
 def health():
     """Vérifie l'état de tous les services."""
     services = {
-        "model":   f"{MODEL_SERVICE_URL}/health",
-        "rewrite": f"{REWRITE_SERVICE_URL}/health",
         "schema":  f"{SCHEMA_SERVICE_URL}/health",
     }
     statuses = {}
@@ -185,20 +160,23 @@ def annotate_column():
 @app.post("/api/v1/translate")
 def translate():
     """
-    Pipeline complet NL → SQL.
+    Question → schéma réduit. La génération SQL n'est pas encore branchée :
+    `sql` vaut null et `status` vaut "generation_not_configured".
 
     Body : {
-      "question":   "Quel est le panier moyen par client ?",
+      "question":   "What is the average order value per customer?",
       "account_id": 1
     }
 
     Retourne : {
       "question_original":  "...",
-      "question_rewritten": "...",
+      "question_rewritten": "...",   (identique à la question : plus de traduction)
       "tables_selected":    [...],
       "columns_display":    [...],
-      "sql":                "SELECT ...",
-      "elapsed_s":          28.3
+      "schema_ddl":         "CREATE TABLE ...",
+      "sql":                null,
+      "status":             "generation_not_configured",
+      "elapsed_s":          0.1
     }
     """
     import time
@@ -215,19 +193,10 @@ def translate():
 
     logger.info("Pipeline démarré — question: %s", question[:80])
 
-    # ── Étape 1 : rewrite ──────────────────────────────────────────────────
-    try:
-        rewrite_result      = call_rewrite(question)
-        question_rewritten  = rewrite_result.get("question_rewritten", question)
-        logger.info("Rewrite OK : '%s'", question_rewritten[:80])
-    except requests.exceptions.ConnectionError:
-        return jsonify({"error": "Impossible de joindre le rewrite_service"}), 503
-    except requests.exceptions.Timeout:
-        return jsonify({"error": "Timeout rewrite_service"}), 504
-    except requests.exceptions.HTTPError as exc:
-        return jsonify({"error": f"Erreur rewrite_service : {exc}"}), 502
+    # Plus de traduction : les questions sont posées en anglais (décision D1).
+    question_rewritten = question
 
-    # ── Étape 2 : schema ───────────────────────────────────────────────────
+    # ── Étape 1 : schema ───────────────────────────────────────────────────
     try:
         schema_result   = call_schema(question_rewritten, account_id)
         schema_ddl      = schema_result.get("schema_ddl", "")
@@ -244,17 +213,7 @@ def translate():
     if not schema_ddl:
         return jsonify({"error": "Schéma vide — lancez /api/v1/index d'abord"}), 400
 
-    # ── Étape 3 : model ────────────────────────────────────────────────────
-    try:
-        model_result = call_model(question_rewritten, schema_ddl)
-        sql          = model_result.get("sql")
-        logger.info("Model OK : %s", str(sql)[:80])
-    except requests.exceptions.ConnectionError:
-        return jsonify({"error": "Impossible de joindre le model_service"}), 503
-    except requests.exceptions.Timeout:
-        return jsonify({"error": "Timeout — le modèle met trop de temps à répondre"}), 504
-    except requests.exceptions.HTTPError as exc:
-        return jsonify({"error": f"Erreur model_service : {exc}"}), 502
+    # ── Étape 2 : génération SQL — à brancher (rôle LLM `SQL`) ─────────────
 
     elapsed = round(time.time() - t0, 2)
     logger.info("✅ Pipeline terminé en %ss", elapsed)
@@ -264,7 +223,9 @@ def translate():
         "question_rewritten": question_rewritten,
         "tables_selected":    tables_selected,
         "columns_display":    columns_display,
-        "sql":                sql,
+        "schema_ddl":         schema_ddl,
+        "sql":                None,
+        "status":             "generation_not_configured",
         "elapsed_s":          elapsed,
     })
 
