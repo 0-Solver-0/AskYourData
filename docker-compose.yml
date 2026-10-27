@@ -57,8 +57,11 @@ services:
       - "8002:8002"
     volumes:
       - ./models/all-MiniLM-L6-v2:/app/models/all-MiniLM-L6-v2:ro
+      # Filtres d'indexation modifiables sans reconstruire l'image
+      - ./config:/app/config:ro
     environment:
       MINILM_MODEL_PATH:   /app/models/all-MiniLM-L6-v2
+      INDEX_FILTERS_PATH:  /app/config/index_filters.yaml
       NL2SQL_DB_HOST:      postgres_nl2sql
       NL2SQL_DB_PORT:      "5432"
       NL2SQL_DB_NAME:      nl2sql

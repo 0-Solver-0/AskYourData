@@ -35,7 +35,8 @@ RUN pip install --upgrade pip && \
         python-dotenv==1.0.1 \
         sentence-transformers==3.0.1 \
         psycopg2-binary==2.9.9 \
-        pgvector==0.3.2
+        pgvector==0.3.2 \
+        pyyaml==6.0.2
 
 # ── Image finale ───────────────────────────────────────────────────────────────
 FROM base AS final
@@ -48,6 +49,7 @@ WORKDIR /app
 
 COPY schema_service/ ./schema_service/
 COPY api_service/    ./api_service/
+COPY config/         ./config/
 
 ENV PYTHONPATH=/app \
     OMP_NUM_THREADS=8 \

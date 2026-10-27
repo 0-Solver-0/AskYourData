@@ -1,0 +1,5 @@
+# Dépendances pour les tests (sans modèle ni GPU)
+pytest==8.3.3
+pyyaml==6.0.2
+psycopg2-binary==2.9.9
+pgvector==0.3.2
