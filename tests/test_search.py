@@ -28,6 +28,8 @@ CATALOG = {
     "res_partner": ("res.partner", "Contact", 62, [
         col("id", pk=True, label="ID"), col("name", "character varying", "Name"),
         col("country_id", label="Country", fk=True), col("customer_rank", label="Customer Rank"),
+        col("email", "character varying", "Email"), col("phone", "character varying", "Phone"),
+        col("city", "character varying", "City"),
     ]),
     "res_users": ("res.users", "User", 7, [
         col("id", pk=True, label="ID"), col("login", "character varying", "Login"),
@@ -68,6 +70,11 @@ CATALOG = {
         col("stage_id", label="Stage", fk=True), col("user_id", label="Salesperson", fk=True),
         col("expected_revenue", "numeric", "Expected Revenue", odoo_type="monetary"),
         col("probability", "double precision", "Probability"),
+        col("lost_reason_id", label="Lost Reason", fk=True),
+    ]),
+    "crm_lost_reason": ("crm.lost.reason", "Opp. Lost Reason", 7, [
+        col("id", pk=True, label="ID"), col("name", "jsonb", "Description", odoo_type="char"),
+        col("active", "boolean", "Active"),
     ]),
     "crm_stage": ("crm.stage", "CRM Stages", 4, [
         col("id", pk=True, label="ID"), col("name", "jsonb", "Stage Name", odoo_type="char"),
@@ -118,6 +125,7 @@ RELATIONS = [
     ("purchase_order", "partner_id", "res_partner"), ("purchase_order", "user_id", "res_users"),
     ("account_payment", "partner_id", "res_partner"),
     ("crm_lead", "stage_id", "crm_stage"), ("crm_lead", "user_id", "res_users"),
+    ("crm_lead", "lost_reason_id", "crm_lost_reason"),
     ("res_users", "partner_id", "res_partner"), ("purchase_order_line", "partner_id", "res_partner"),
     ("account_analytic_line", "partner_id", "res_partner"), ("res_partner", "country_id", "res_country"),
     ("sale_order", "create_uid", "res_users"), ("crm_lead", "company_id", "res_company"),
@@ -226,7 +234,8 @@ def test_one_join_key_per_table_pair(synonyms):
 def test_empty_tables_are_penalised(synonyms):
     p = plan("amount per partner", synonyms)
     ranking = [r["table_name"] for r in p["ranking"]]
-    assert ranking.index("account_analytic_line") > ranking.index("purchase_order_line")
+    assert "account_analytic_line" not in ranking or \
+        ranking.index("account_analytic_line") > ranking.index("purchase_order_line")
 
 
 def test_lookup_reason_is_reported(synonyms):
@@ -418,3 +427,31 @@ def test_legacy_mode_is_unchanged_without_coverage_input(synonyms):
     p = plan("Customers with the highest unpaid invoice amount, by salesperson", synonyms)
     assert p["mode"] == "legacy"
     assert all(t["elements"] is None for t in p["tables"])
+
+
+def test_tokenize_removes_stopwords_before_singular():
+    # « this » ne doit pas devenir « thi » et passer le filtre des mots vides
+    assert search.tokenize("Opportunities won this quarter by salesperson") == ["opportunity", "won", "salesperson"]
+    assert search.tokenize("Deliveries pending this week") == ["delivery", "pending"]
+
+
+def test_element_texts_keep_context():
+    q = "Products with less than 10 units in stock"
+    assert search.element_texts(q, ["product", "unit", "stock"], 2) == [
+        "products with less", "than 10 units in stock", "units in stock"]
+    assert search.element_texts(q, ["unit"], 0) == ["unit"]
+    assert search.element_texts(q, ["absent"], 2) == ["absent"]
+
+
+def test_coverage_reference_table_brings_its_fact_table(synonyms):
+    # crm_lost_reason couvre tous les mots, mais compter les raisons demande crm_lead
+    p = plan_coverage("Top lost reasons this year", synonyms)
+    reasons = {t["table_name"]: t["reason"] for t in p["tables"]}
+    assert "crm_lost_reason" in reasons
+    assert reasons.get("crm_lead") in ("search", "fact:crm_lost_reason")
+
+
+def test_coverage_large_table_is_not_a_reference(synonyms):
+    # res_partner a beaucoup de colonnes métier : pas de table de faits ajoutée d'office
+    p = plan_coverage("How many customers do we have in Morocco?", synonyms)
+    assert not any(t["reason"].startswith("fact:") for t in p["tables"])

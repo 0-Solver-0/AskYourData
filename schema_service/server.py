@@ -23,13 +23,14 @@ import psycopg2
 import psycopg2.extras
 from flask import Flask, jsonify, request
 from pgvector.psycopg2 import register_vector
-from sentence_transformers import SentenceTransformer
 
 from . import search
 from .accounts import default_account_from_env, sync_default_account
+from .embedder import Embedder, EmbedderConfig
 from .filters import load_filter_config
 from .indexer import index_account, index_report, reindex_table_embeddings
 from .search_data import load_element_sims, load_search_data
+from .vector_space import ensure_vector_space, missing_embeddings
 
 # ── Logging ────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -41,7 +42,6 @@ logging.basicConfig(
 logger = logging.getLogger("schema_service")
 
 # ── Config ─────────────────────────────────────────────────────────────────
-MODEL_PATH   = os.getenv("MINILM_MODEL_PATH", "/app/models/all-MiniLM-L6-v2")
 NL2SQL_DB    = {
     "host":     os.getenv("NL2SQL_DB_HOST",     "postgres_nl2sql"),
     "port":     int(os.getenv("NL2SQL_DB_PORT",  "5432")),
@@ -52,23 +52,20 @@ NL2SQL_DB    = {
 SCHEMA_SQL    = os.path.join(os.path.dirname(__file__), "schema.sql")
 
 app      = Flask(__name__)
-embedder = None
+embedder: Embedder = None
+vector_state: dict = {}
 
 
 # ── Embedder ───────────────────────────────────────────────────────────────
 def load_embedder():
+    """Modèle, dimension, appareil et consignes : voir schema_service/embedder.py (EMBEDDER_*)."""
     global embedder
-    logger.info("⏳ Chargement de l'embedder (%s)…", MODEL_PATH)
-    embedder = SentenceTransformer(MODEL_PATH)
-    logger.info("✅ Embedder OK")
+    embedder = Embedder(EmbedderConfig.from_env()).load()
 
 
 def embed(texts: list[str]) -> list[list[float]]:
-    return embedder.encode(texts, batch_size=64).tolist()
-
-
-def embed_one(text: str) -> list[float]:
-    return embedder.encode(text).tolist()
+    """Textes indexés (tables, colonnes) : sans consigne."""
+    return embedder.embed_documents(texts)
 
 
 # ── DB helpers ─────────────────────────────────────────────────────────────
@@ -131,6 +128,7 @@ def plan_params() -> search.PlanParams:
         max_columns=int(os.getenv("SEARCH_MAX_COLUMNS", "15")),
         token_budget=int(os.getenv("SCHEMA_TOKEN_BUDGET", "3000")),
         candidate_tables=int(os.getenv("SEARCH_CANDIDATE_TABLES", "10")),
+        element_context=int(os.getenv("SEARCH_ELEMENT_CONTEXT", "2")),
         coverage_weight=float(os.getenv("SEARCH_COVERAGE_WEIGHT", "0.6")),
         min_element_strength=float(os.getenv("SEARCH_MIN_ELEMENT_STRENGTH", "0.3")),
         cover_ratio=float(os.getenv("SEARCH_COVER_RATIO", "0.8")),
@@ -149,11 +147,21 @@ def health():
     except Exception as e:  # noqa: BLE001
         db_ok = str(e)
 
+    reindex_required = None
+    if db_ok is True:
+        try:
+            conn = get_conn()
+            reindex_required = missing_embeddings(conn) > 0
+            conn.close()
+        except Exception:  # noqa: BLE001
+            pass
+
     return jsonify({
-        "status":       "ok" if db_ok is True and embedder is not None else "error",
-        "embedder":     "ok" if embedder is not None else "not_loaded",
-        "model_path":   MODEL_PATH,
-        "db_connected": db_ok,
+        "status":           "ok" if db_ok is True and embedder is not None else "error",
+        "embedder":         embedder.info() if embedder is not None else "not_loaded",
+        "reindex_required": reindex_required,
+        "vector_space":     vector_state,
+        "db_connected":     db_ok,
     }), 200 if db_ok is True else 500
 
 
@@ -186,7 +194,7 @@ def select():
         params   = plan_params()
         query    = search.build_query(question, search.load_synonyms())
         # legacy : question + synonymes dans un seul vecteur ; coverage : la question telle quelle
-        q_vector = embed_one(query.expanded_text() if mode == "legacy" else question)
+        q_vector = embedder.embed_query(query.expanded_text() if mode == "legacy" else question, "tables")
 
         conn = get_conn()
         try:
@@ -198,11 +206,14 @@ def select():
             if mode == "coverage":
                 names    = search.table_candidates(query, candidates, params.candidate_tables)
                 elements = search.question_elements(query)
-                vectors  = embed(elements) if elements else []
+                # Chaque élément est encodé avec les mots qui l'entourent (« units in stock »)
+                texts    = search.element_texts(question, elements, params.element_context)
+                vectors  = embedder.embed_queries(texts, "columns")
                 coverage = search.CoverageInput(
                     elements=elements,
                     element_sims=load_element_sims(conn, account_id, names, vectors),
                     candidate_tables=names,
+                    element_texts=texts,
                 )
         finally:
             conn.close()
@@ -232,7 +243,9 @@ def select():
                 "query_terms": {t: sorted(v) for t, v in query.expansions.items()},
                 "encoded_text": query.expanded_text() if mode == "legacy" else question,
                 "elements": plan.get("elements"),
+                "element_texts": coverage.element_texts if coverage else None,
                 "candidate_tables": coverage.candidate_tables if coverage else None,
+                "embedder": embedder.cfg.model_id,
                 "tables": plan["tables"],
                 "ranking": plan["ranking"],
                 "value_matches": plan["value_matches"],
@@ -442,6 +455,12 @@ _conn.close()
 logger.info("✅ Compte par défaut : %s@%s:%s/%s (schéma %s)", _account["pg_user"], _account["pg_host"],
             _account["pg_port"], _account["pg_db"], _account["pg_schema"])
 load_embedder()
+_conn = psycopg2.connect(**NL2SQL_DB)
+vector_state = ensure_vector_space(_conn, embedder.dimension, embedder.cfg.model_id)
+_conn.close()
+if vector_state["reindex_required"]:
+    logger.warning("⚠️  Vecteurs absents ou obsolètes : relancez POST /index pour ce modèle (%s)",
+                   embedder.cfg.model_id)
 
 
 if __name__ == "__main__":

@@ -49,3 +49,4 @@ jobs:
           docker compose -f docker-compose.odoo.yml config --quiet
           docker network create nl2sql_net
           docker compose -f docker-compose.yml config --quiet
+          docker compose -f docker-compose.yml -f docker-compose.gpu.yml config --quiet

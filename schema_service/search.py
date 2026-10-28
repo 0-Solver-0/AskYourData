@@ -134,8 +134,12 @@ def tokenize(text: Optional[str], keep_stopwords: bool = False) -> list[str]:
     """Minuscules, découpage, singulier simple ; les mots vides sont retirés par défaut."""
     if not text:
         return []
-    tokens = [_singular(t) for t in _TOKEN_RE.findall(str(text).lower())]
-    return [t for t in tokens if keep_stopwords or (t not in STOPWORDS and len(t) > 1)]
+    words = _TOKEN_RE.findall(str(text).lower())
+    if keep_stopwords:
+        return [_singular(t) for t in words]
+    # Mots vides retirés AVANT le singulier : sinon « this » devient « thi » et passe le filtre
+    tokens = [_singular(t) for t in words if t not in STOPWORDS]
+    return [t for t in tokens if t not in STOPWORDS and len(t) > 1]
 
 
 def load_synonyms(path: str = DEFAULT_SYNONYMS_PATH) -> dict[str, set[str]]:
@@ -536,6 +540,7 @@ class CoverageInput:
     elements: list[str]                                  # éléments de la question, encodés un par un
     element_sims: dict[tuple[str, str], list[float]]     # (table, colonne) → similarité avec chaque élément
     candidate_tables: list[str] = field(default_factory=list)
+    element_texts: list[str] = field(default_factory=list)    # textes encodés (élément + contexte)
 
 
 @dataclass
@@ -554,6 +559,25 @@ class ElementMatch:
 def question_elements(query: Query) -> list[str]:
     """Éléments de la question cherchés dans les colonnes : les mots utiles, sans les nombres."""
     return [t for t in query.tokens if not t.isdigit()]
+
+
+def element_texts(question: str, elements: list[str], window: int = 2) -> list[str]:
+    """
+    Texte encodé pour chaque élément : l'élément avec les `window` mots qui l'entourent dans la
+    question (mots vides compris). Un mot isolé ne veut presque rien dire pour un embedder :
+    « stock » seul trouve `move_id`, « units in stock » trouve une quantité en stock.
+    window = 0 : l'élément seul.
+    """
+    words = _TOKEN_RE.findall(str(question).lower())
+    singular = [_singular(w) for w in words]
+    out = []
+    for element in elements:
+        if window <= 0 or element not in singular:
+            out.append(element)
+            continue
+        i = singular.index(element)
+        out.append(" ".join(words[max(0, i - window): i + window + 1]))
+    return out
 
 
 def stage1_score(query: Query, candidates: list[TableCandidate]) -> list[TableCandidate]:
@@ -636,7 +660,8 @@ def match_elements(query: Query, elements: list[str], table: str, core_tokens: s
 
 def select_by_coverage(query: Query, candidates: list[TableCandidate],
                        columns_by_table: dict[str, list[dict]], coverage: CoverageInput,
-                       params: "PlanParams") -> tuple[list[TableCandidate], list[TableCandidate]]:
+                       params: "PlanParams",
+                       relations: Optional[list[dict]] = None) -> tuple[list[TableCandidate], list[TableCandidate]]:
     """
     Étapes 1 à 3 du mode coverage. Retourne (classement, graines).
     Une table est retenue si elle apporte un élément de la question que les graines déjà
@@ -686,8 +711,46 @@ def select_by_coverage(query: Query, candidates: list[TableCandidate],
             seeds.append(c)
             for e, m in c.element_matches.items():
                 covered[e] = max(covered.get(e, 0.0), m.weight)
+    add_fact_tables(seeds, pool, ranked, columns_by_table, relations or [], params)
     rest = [c for c in ranked if c not in pool]
     return pool + rest, seeds
+
+
+def business_columns(columns: list[dict]) -> list[dict]:
+    """Colonnes « métier » d'une table : ni clé primaire, ni colonne technique."""
+    return [c for c in columns
+            if not c.get("is_pk") and c["column_name"] not in NOISE_COLUMNS
+            and c["column_name"] not in TECHNICAL_FK_COLUMNS
+            and c["column_name"] not in ("active", "sequence", "color", "display_name")]
+
+
+def add_fact_tables(seeds: list[TableCandidate], pool: list[TableCandidate], ranked: list[TableCandidate],
+                    columns_by_table: dict[str, list[dict]], relations: list[dict],
+                    params: "PlanParams") -> None:
+    """
+    Une table de référence (peu de colonnes métier : raisons de perte, étapes, catégories…)
+    ne permet pas de compter ni de classer à elle seule. Si une graine en est une et qu'aucune
+    autre graine ne pointe vers elle, on ajoute la meilleure table remplie qui pointe vers elle
+    par une clé étrangère. Ex. « Top lost reasons » → crm_lost_reason + crm_lead (lost_reason_id).
+    """
+    seed_names = {c.table_name for c in seeds}
+    by_name = {c.table_name: c for c in ranked}
+    order = {c.table_name: i for i, c in enumerate(pool + [c for c in ranked if c not in pool])}
+    for seed in list(seeds):
+        if len(business_columns(columns_by_table.get(seed.table_name, []))) > params.reference_max_columns:
+            continue
+        pointing = {r["from_table"] for r in relations
+                    if r["to_table"] == seed.table_name and r["from_table"] != seed.table_name
+                    and r["from_column"] not in TECHNICAL_FK_COLUMNS}
+        if pointing & seed_names:
+            continue
+        facts = [by_name[t] for t in pointing if t in by_name and (by_name[t].row_count or 0) > 0]
+        if not facts:
+            continue
+        fact = min(facts, key=lambda c: order.get(c.table_name, 10 ** 6))
+        fact.reason = f"fact:{seed.table_name}"
+        seeds.append(fact)
+        seed_names.add(fact.table_name)
 
 
 # ── Plan complet ─────────────────────────────────────────────────────────────
@@ -707,6 +770,8 @@ class PlanParams:
     min_element_strength: float = 0.3  # plancher pour qu'une colonne couvre un élément
     cover_ratio: float = 0.8         # … et part minimale de la meilleure correspondance de l'élément
     min_coverage_gain: float = 0.15  # apport minimal (pondéré par la rareté) pour ajouter une graine
+    element_context: int = 2         # mots de contexte de part et d'autre d'un élément encodé
+    reference_max_columns: int = 4   # au plus N colonnes métier : table de référence (→ ajout de la table de faits)
 
 
 def plan_schema(query: Query, candidates: list[TableCandidate], tables_by_name: dict[str, dict],
@@ -730,7 +795,7 @@ def plan_schema(query: Query, candidates: list[TableCandidate], tables_by_name: 
                 c.reason = "search"
                 seeds.append(c)
     else:
-        ranked, seeds = select_by_coverage(query, candidates, columns_by_table, coverage, params)
+        ranked, seeds = select_by_coverage(query, candidates, columns_by_table, coverage, params, relations)
     seed_names = [c.table_name for c in seeds]
 
     graph = build_graph(relations)
@@ -743,7 +808,7 @@ def plan_schema(query: Query, candidates: list[TableCandidate], tables_by_name: 
     for m in value_matches:
         values_by_table.setdefault(m.table_name, []).append(m)
 
-    order: list[tuple[str, str]] = [(n, "search") for n in seed_names]
+    order: list[tuple[str, str]] = [(c.table_name, c.reason or "search") for c in seeds]
     order += [(t, r) for t, r in joins.items()]
     taken = set(seed_names) | set(joins)
     for m in value_matches:                     # une valeur citée (« Morocco ») amène sa table

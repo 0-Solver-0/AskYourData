@@ -22,7 +22,7 @@ postgres_odoo    :5432  postgres:16-alpine  base Odoo
 odoo             :8069  odoo:18.0
 ```
 
-Aucun GPU n'est nécessaire : les LLM sont appelés via API.
+Aucun GPU n'est nécessaire : les LLM sont appelés via API. Un GPU NVIDIA peut accélérer l'embedder local (voir « Embedder »).
 
 ## Structure
 
@@ -32,8 +32,10 @@ Aucun GPU n'est nécessaire : les LLM sont appelés via API.
 ├── docker-compose.yml       postgres_nl2sql + schema_service + api_service
 ├── docker-compose.odoo.yml  Odoo 18 + postgres_odoo (crée le réseau nl2sql_net)
 ├── .env.example
-├── models/                  embedder local (non versionné)
-│   └── all-MiniLM-L6-v2/
+├── docker-compose.gpu.yml   option : GPU NVIDIA pour l'embedder
+├── models/                  embedders locaux (non versionnés)
+│   ├── all-MiniLM-L6-v2/
+│   └── Qwen3-Embedding-0.6B/   (option)
 ├── schema_service/server.py
 ├── api_service/app.py
 ├── postgres/init/01_init.sql
@@ -49,7 +51,7 @@ Aucun GPU n'est nécessaire : les LLM sont appelés via API.
 # 1. Variables d'environnement
 cp .env.example .env
 
-# 2. Embedder local (une fois, ~90 Mo)
+# 2. Embedder local (une fois, ~90 Mo) — autres modèles : voir « Embedder »
 pip install -U "huggingface_hub[cli]"
 huggingface-cli download sentence-transformers/all-MiniLM-L6-v2 --local-dir models/all-MiniLM-L6-v2
 
@@ -118,6 +120,34 @@ Le mode se choisit dans le `.env`, ou à chaque appel de diagnostic avec `"searc
 Contrôle sur la vraie base (sans coût) : `python benchmark/schema_search_eval.py` vérifie les tables attendues pour les questions de [`benchmark/schema_questions.yaml`](benchmark/schema_questions.yaml). Il compare les deux modes (`--mode both`, par défaut) : rappel, précision (tables utiles / tables envoyées), tables par question, tokens et temps.
 
 Une collection Postman est fournie : [`tools/postman/AskYourData.postman_collection.json`](tools/postman/AskYourData.postman_collection.json).
+
+## Embedder
+
+Le modèle qui transforme tables, colonnes et questions en vecteurs se choisit dans le `.env`, sans toucher au code (`schema_service/embedder.py`).
+
+| Variable | Rôle |
+|---|---|
+| `EMBEDDER_MODEL` | dossier du modèle dans `./models/` (défaut `all-MiniLM-L6-v2`) |
+| `EMBEDDER_DEVICE` | `cpu`, `cuda` ou `auto` |
+| `EMBEDDER_DIM` | dimension réduite pour les modèles qui l'acceptent (Qwen3-Embedding : 32 à 1024) ; vide = dimension native |
+| `EMBEDDER_PROMPT_TABLES` / `EMBEDDER_PROMPT_COLUMNS` | consignes ajoutées aux questions ; mises automatiquement pour Qwen3-Embedding, aucune pour MiniLM |
+
+**Changer de modèle** : au démarrage, `schema_service` compare le modèle et la dimension avec ceux de l'index. S'ils diffèrent, il adapte la base et vide les vecteurs, puis `/health` indique `"reindex_required": true`. Il suffit alors de relancer `POST /api/v1/index`. Les annotations, descriptions et valeurs sont conservées.
+
+```bash
+# Exemple : Qwen3-Embedding-0.6B (~1,2 Go)
+huggingface-cli download Qwen/Qwen3-Embedding-0.6B --local-dir models/Qwen3-Embedding-0.6B
+# .env : EMBEDDER_MODEL=Qwen3-Embedding-0.6B
+docker compose up -d --build
+curl -X POST http://localhost:5000/api/v1/index -H "Content-Type: application/json" -d '{"account_id": 1}'
+```
+
+**GPU NVIDIA (option)** : PyTorch CUDA 12.8, compatible avec les RTX 50xx.
+```bash
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build
+curl http://localhost:5000/api/v1/health     # services.schema.embedder.device = "cuda"
+```
+Sans GPU, tout fonctionne sur CPU : le GPU accélère l'indexation et la recherche, il n'est pas nécessaire.
 
 ## Indexation : ce qui est retenu
 

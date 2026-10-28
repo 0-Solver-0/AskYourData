@@ -47,6 +47,7 @@ def run(mode: str, cases: list, args) -> dict:
     total_req = total_ok = full_hits = 0
     sent = useful_total = 0
     tokens, times = [], []
+    embedder = None
     for case in cases:
         body = {"question": case["question"], "account_id": args.account}
         if mode != "default":
@@ -56,6 +57,7 @@ def run(mode: str, cases: list, args) -> dict:
             print(f"✗ {case['question']}\n    erreur {resp.status_code} : {resp.text[:200]}")
             continue
         data = resp.json()
+        embedder = embedder or data.get("debug", {}).get("embedder")
         selected = {t["table_name"] for t in data["tables"]}
         missing = [r for r in case["expected"] if not satisfied(r, selected)]
         useful = useful_tables(case["expected"], selected)
@@ -92,6 +94,7 @@ def run(mode: str, cases: list, args) -> dict:
         return {}
     summary = {
         "mode": mode,
+        "embedder": embedder or "?",
         "full": f"{full_hits}/{len(cases)}",
         "recall": 100 * total_ok / max(total_req, 1),
         "precision": 100 * useful_total / max(sent, 1),
@@ -99,7 +102,7 @@ def run(mode: str, cases: list, args) -> dict:
         "tokens": sum(tokens) // len(tokens),
         "ms": 1000 * sum(times) / len(times),
     }
-    print("── Résumé ──")
+    print(f"── Résumé ({summary['embedder']}) ──")
     print(f"Questions entièrement couvertes : {summary['full']}")
     print(f"Rappel des tables attendues     : {total_ok}/{total_req} ({summary['recall']:.0f} %)")
     print(f"Précision (tables utiles)       : {useful_total}/{sent} ({summary['precision']:.0f} %)")
@@ -128,6 +131,7 @@ def main() -> int:
         return 1
     if len(summaries) > 1:
         print("\n══ Comparaison ══")
+        print(f"embedder : {summaries[0]['embedder']}")
         print(f"{'mode':<10}{'complètes':>11}{'rappel':>9}{'précision':>11}{'tables':>8}{'tokens':>8}{'ms':>7}")
         for s in summaries:
             print(f"{s['mode']:<10}{s['full']:>11}{s['recall']:>8.0f}%{s['precision']:>10.0f}%"
