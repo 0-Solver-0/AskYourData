@@ -59,12 +59,15 @@ def column_display_label(col: dict) -> str:
 
 
 def build_column_text(col: dict) -> str:
-    """Texte d'une colonne : nom, libellés, synonymes, aide courte, valeurs possibles."""
+    """Texte d'une colonne : nom, libellés, synonymes, notes (enrichissement), aide courte, valeurs possibles."""
     parts = [col["column_name"], humanize(col["column_name"])]
     for key in ("label", "odoo_label", "synonyms"):
         text = _clean(col.get(key))
         if text and text not in parts:
             parts.append(text)
+    notes = _clean(col.get("notes"))
+    if notes:
+        parts.append(notes[:MAX_HELP_CHARS])
     help_text = _clean(col.get("odoo_help"))
     if help_text:
         parts.append(help_text[:MAX_HELP_CHARS])

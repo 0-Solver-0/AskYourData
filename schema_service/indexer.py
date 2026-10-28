@@ -149,7 +149,7 @@ def reindex_table_embeddings(conn, table_id: int, embed: EmbedFn) -> None:
         table = dict(cur.fetchone())
         cur.execute(
             """
-            SELECT id, column_name, data_type, label, synonyms, odoo_label, odoo_help, selection_values
+            SELECT id, column_name, data_type, label, synonyms, notes, odoo_label, odoo_help, selection_values
             FROM nl2sql_columns WHERE table_id = %s ORDER BY id
             """,
             (table_id,),
@@ -233,17 +233,18 @@ def index_account(conn, src, account: dict, embed: Optional[EmbedFn], cfg: Filte
                 cur.execute(
                     """
                     INSERT INTO nl2sql_tables
-                        (account_id, schema_name, table_name, ddl, odoo_model, odoo_label, row_count)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                        (account_id, schema_name, table_name, ddl, odoo_model, odoo_label, odoo_module, row_count)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (account_id, schema_name, table_name)
                     DO UPDATE SET ddl        = EXCLUDED.ddl,
                                   odoo_model = EXCLUDED.odoo_model,
                                   odoo_label = EXCLUDED.odoo_label,
+                                  odoo_module = EXCLUDED.odoo_module,
                                   row_count  = EXCLUDED.row_count
                     RETURNING id
                     """,
                     (account_id, schema, table_name, _build_ddl(table_name, cols, pk_cols),
-                     m.model if m else None, m.label if m else None, row_count),
+                     m.model if m else None, m.label if m else None, m.module if m else None, row_count),
                 )
                 table_id = cur.fetchone()[0]
 
@@ -383,7 +384,7 @@ def index_report(conn, account_id: int) -> dict:
     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute(
             """
-            SELECT t.table_name, t.odoo_model, t.odoo_label, t.row_count, t.enriched, t.manual_override,
+            SELECT t.table_name, t.odoo_model, t.odoo_module, t.odoo_label, t.row_count, t.enriched, t.manual_override,
                    (t.embedding IS NOT NULL) AS has_embedding,
                    (SELECT count(*) FROM nl2sql_columns c WHERE c.table_id = t.id) AS columns
             FROM nl2sql_tables t

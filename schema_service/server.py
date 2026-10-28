@@ -12,6 +12,9 @@ Endpoints :
   POST /annotate/table          — annoter une table (prioritaire sur l'automatique)
   POST /annotate/column         — annoter une colonne (prioritaire sur l'automatique)
   POST /reindex                 — recalcule les embeddings d'une table et de ses colonnes
+  GET  /modules                 — modules Odoo de l'index
+  GET  /export                  — fichier d'enrichissement d'un module (JSON)
+  POST /import                  — applique un fichier d'enrichissement, réencode les tables modifiées
 """
 
 import logging
@@ -27,9 +30,10 @@ from pgvector.psycopg2 import register_vector
 from . import search
 from .accounts import default_account_from_env, sync_default_account
 from .embedder import Embedder, EmbedderConfig
+from .enrichment import export_schema, import_enrichment, list_modules
 from .filters import load_filter_config
 from .indexer import index_account, index_report, reindex_table_embeddings
-from .search_data import load_element_sims, load_search_data
+from .search_data import load_element_sims, load_search_data, vector_ranking
 from .vector_space import ensure_vector_space, missing_embeddings
 
 # ── Logging ────────────────────────────────────────────────────────────────
@@ -52,6 +56,7 @@ NL2SQL_DB    = {
 SCHEMA_SQL    = os.path.join(os.path.dirname(__file__), "schema.sql")
 
 app      = Flask(__name__)
+app.json.sort_keys = False   # garder l'ordre des champs (fichiers d'enrichissement lisibles)
 embedder: Embedder = None
 vector_state: dict = {}
 
@@ -215,6 +220,11 @@ def select():
                     candidate_tables=names,
                     element_texts=texts,
                 )
+            vec_ranking = None
+            if debug:
+                # Mesure : la question telle quelle, comparée aux seuls vecteurs des tables
+                raw_vector = q_vector if mode == "coverage" else embedder.embed_query(question, "tables")
+                vec_ranking = vector_ranking(conn, account_id, raw_vector)
         finally:
             conn.close()
 
@@ -248,6 +258,7 @@ def select():
                 "embedder": embedder.cfg.model_id,
                 "tables": plan["tables"],
                 "ranking": plan["ranking"],
+                "vector_ranking": vec_ranking,
                 "value_matches": plan["value_matches"],
             }
         return jsonify(response)
@@ -308,6 +319,81 @@ def get_index_report():
         return jsonify(report)
     except Exception as exc:  # noqa: BLE001
         logger.exception("Erreur /index/report")
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.get("/modules")
+def get_modules():
+    """Modules Odoo de l'index (tables, tables enrichies). Query : ?account_id=1"""
+    account_id = request.args.get("account_id", type=int)
+    if not account_id:
+        return jsonify({"error": "'account_id' obligatoire"}), 400
+    try:
+        conn = get_conn()
+        modules = list_modules(conn, account_id)
+        conn.close()
+        return jsonify({"account_id": account_id, "modules": modules})
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Erreur /modules")
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.get("/export")
+def export():
+    """
+    Fichier d'enrichissement (JSON) d'un module ou d'une liste de tables.
+    Query : ?account_id=1&module=account  |  &tables=account_move,sale_order  |  &include_technical=true
+    """
+    account_id = request.args.get("account_id", type=int)
+    module = (request.args.get("module") or "").strip() or None
+    tables = [t.strip() for t in (request.args.get("tables") or "").split(",") if t.strip()] or None
+    include_technical = (request.args.get("include_technical") or "").lower() in ("1", "true", "yes")
+    if not account_id:
+        return jsonify({"error": "'account_id' obligatoire"}), 400
+    if not module and not tables:
+        return jsonify({"error": "préciser 'module' ou 'tables' (liste des modules : /modules)"}), 400
+    try:
+        conn = get_conn()
+        data = export_schema(conn, account_id, module, tables, include_technical)
+        conn.close()
+        if not data["tables"]:
+            return jsonify({"error": "aucune table indexée pour ce module ou ces tables"}), 404
+        return jsonify(data)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Erreur /export")
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.post("/import")
+def import_():
+    """
+    Applique un fichier d'enrichissement (le JSON de /export, rempli).
+    Body : le fichier. Query : ?account_id=1 (sinon celui du fichier) &dry_run=true &source=manual
+    Les tables modifiées sont réencodées aussitôt (pas de réindexation complète).
+    """
+    payload = request.get_json(silent=True)
+    if payload is None:
+        return jsonify({"error": "corps JSON attendu (fichier exporté par /export)"}), 400
+    account_id = request.args.get("account_id", type=int) or payload.get("account_id")
+    dry_run = (request.args.get("dry_run") or "").lower() in ("1", "true", "yes")
+    source = (request.args.get("source") or "manual").strip()[:200]
+    if not account_id:
+        return jsonify({"error": "'account_id' obligatoire"}), 400
+    try:
+        conn = get_conn()
+        report = import_enrichment(conn, int(account_id), payload, dry_run=dry_run, source=source)
+        t0 = time.time()
+        for table_id in report.pop("changed_table_ids"):
+            reindex_table_embeddings(conn, table_id, embed)
+        report["reencoded_s"] = round(time.time() - t0, 2)
+        conn.close()
+        logger.info("Import d'enrichissement%s : %d tables, %d champs",
+                    " (simulation)" if dry_run else "", len(report["tables_changed"]), report["fields_changed"])
+        return jsonify(report)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Erreur /import")
         return jsonify({"error": str(exc)}), 500
 
 
