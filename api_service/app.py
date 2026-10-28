@@ -184,7 +184,7 @@ def schema_debug():
     """
     Diagnostic de la recherche de schéma : tables retenues et pourquoi (recherche, jointure,
     référence), détail des scores, colonnes gardées, classement, taille en tokens.
-    Body : {"question": "...", "account_id": 1}
+    Body : {"question": "...", "account_id": 1, "search_mode": "legacy" | "coverage" (optionnel)}
     """
     data = request.get_json(silent=True) or {}
     if not data.get("question") or not data.get("account_id"):
@@ -192,7 +192,8 @@ def schema_debug():
     try:
         resp = requests.post(
             f"{SCHEMA_SERVICE_URL}/select",
-            json={"question": data["question"], "account_id": data["account_id"], "debug": True},
+            json={"question": data["question"], "account_id": data["account_id"], "debug": True,
+                  "search_mode": data.get("search_mode")},
             timeout=30,
         )
         return jsonify(resp.json()), resp.status_code

@@ -273,3 +273,32 @@ def test_reference_values_are_indexed(dbs):
         rows = cur.fetchall()
     assert ("res_country", "Morocco", "morocco") in rows          # JSONB lu en anglais
     assert ("res_partner", "Azure Interior", "azure interior") in rows
+
+
+def test_coverage_search_reads_element_similarities(dbs):
+    from schema_service import search
+    from schema_service.search_data import load_element_sims, load_search_data
+
+    src, nl, account = dbs
+    index_account(nl, src, account, fake_embed, load_filter_config(CONFIG_PATH))
+    with nl.cursor() as cur:
+        cur.execute("""SELECT c.embedding FROM nl2sql_columns c JOIN nl2sql_tables t ON t.id = c.table_id
+                       WHERE t.account_id = %s AND t.table_name = 'sale_order' AND c.column_name = 'amount_total'""",
+                    (account["id"],))
+        vec = cur.fetchone()[0]
+        amount_vec = vec.to_list() if hasattr(vec, "to_list") else [float(x) for x in vec]  # pgvector 0.3 / 0.4+
+
+    q_vec = fake_embed(["Top customers by revenue"])[0]
+    candidates, tables, cols, rels, values = load_search_data(nl, account["id"], q_vec)
+    sims = load_element_sims(nl, account["id"], ["sale_order", "res_partner"], [q_vec, amount_vec])
+
+    assert {t for t, _ in sims} == {"sale_order", "res_partner"}         # tables candidates seulement
+    assert all(len(v) == 2 for v in sims.values())
+    assert sims[("sale_order", "amount_total")][1] == pytest.approx(1.0, abs=1e-5)
+
+    query = search.build_query("Top customers by revenue", {})
+    cov = search.CoverageInput(elements=search.question_elements(query),
+                               element_sims=load_element_sims(nl, account["id"], [c.table_name for c in candidates],
+                                                              fake_embed(search.question_elements(query))))
+    plan = search.plan_schema(query, candidates, tables, cols, rels, search.PlanParams(), [], cov)
+    assert plan["mode"] == "coverage" and plan["tables"]

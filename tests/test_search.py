@@ -316,3 +316,105 @@ def test_value_brings_its_table_and_join(synonyms):
     assert reasons["res_country"] in ("search", "value:res_country.name")
     assert "FOREIGN KEY (country_id) REFERENCES res_country(id)" in p["schema_ddl"]
     assert "question mentions name = 'Morocco'" in p["schema_ddl"]
+
+
+def test_plural_common_words_are_not_values():
+    # Cas observé : « customers » reconnu comme l'emplacement de stock « Customers »
+    values = VALUES + [{"table_name": "stock_location", "column_name": "name", "value": "Customers",
+                        "normalized": "customers"}]
+    found = search.match_values("How many customers do we have in Morocco?", values)
+    assert [(m.table_name, m.value) for m in found] == [("res_country", "Morocco")]
+
+
+# ── Mode coverage : tables d'abord, puis colonnes table par table ────────────
+
+# Similarités élément ↔ colonne données à la main pour quelques colonnes ; 0,2 sinon.
+# Le bonus lexical (libellé contenant l'élément ou un synonyme) est ajouté par la recherche.
+ELEMENT_SIMS = {
+    ("account_move", "amount_residual", "unpaid"): 0.45,
+    ("account_move", "payment_state", "unpaid"): 0.4,
+}
+
+
+def coverage_input(question, synonyms):
+    query = search.build_query(question, synonyms)
+    elements = search.question_elements(query)
+    sims = {}
+    for table, (_, _, _, cols) in CATALOG.items():
+        for c in cols + COMMON:
+            sims[(table, c["column_name"])] = [ELEMENT_SIMS.get((table, c["column_name"], e), 0.2)
+                                               for e in elements]
+    return query, search.CoverageInput(elements=elements, element_sims=sims, candidate_tables=list(CATALOG))
+
+
+def plan_coverage(question, synonyms, vector_scores=None, params=None):
+    query, cov = coverage_input(question, synonyms)
+    cands, tables, cols, rels = build_inputs(vector_scores)
+    matches = search.match_values(question, VALUES)
+    return search.plan_schema(query, cands, tables, cols, rels, params or search.PlanParams(), matches, cov)
+
+
+def test_question_elements_skip_numbers(synonyms):
+    q = search.build_query("Top 5 customers by revenue in 2025", synonyms)
+    assert search.question_elements(q) == ["customer", "revenue"]
+
+
+def test_column_idf_rare_columns_weigh_more():
+    _, _, cols, _ = build_inputs()
+    idf = search.column_idf(cols)
+    assert idf["amount_residual"] > idf["user_id"] > idf["partner_id"] > idf["id"]
+    assert idf["id"] == 0.0
+
+
+def test_coverage_unpaid_invoices_keeps_only_useful_tables(synonyms):
+    # Comme sur la vraie base : sale_order est un peu plus proche de la question que account_move
+    p = plan_coverage("Customers with the highest unpaid invoice amount, by salesperson", synonyms,
+                      vector_scores={"sale_order": 0.32, "sale_order_line": 0.31})
+    assert p["mode"] == "coverage"
+    assert names(p)[0] == "account_move"
+    assert set(names(p)) == {"account_move", "res_partner", "res_users"}
+
+
+def test_coverage_columns_are_the_matched_ones(synonyms):
+    p = plan_coverage("Customers with the highest unpaid invoice amount, by salesperson", synonyms)
+    am = next(t for t in p["tables"] if t["table_name"] == "account_move")
+    kept = {c["column_name"]: c["reason"] for c in am["columns"]}
+    assert kept["amount_residual"] == "matched"
+    assert kept["invoice_user_id"] in ("matched", "join")
+    assert {"payment_state", "move_type", "partner_id"} <= set(kept)
+    assert am["elements"]["unpaid"]["column"] == "amount_residual"
+    assert am["elements"]["invoice"]["column"] == "(table)"
+
+
+def test_coverage_common_column_does_not_add_a_table(synonyms):
+    # sale_order ne couvre que des éléments déjà couverts par account_move, avec des colonnes communes
+    p = plan_coverage("Customers with the highest unpaid invoice amount, by salesperson", synonyms,
+                      vector_scores={"sale_order": 0.32})
+    so = next(r for r in p["ranking"] if r["table_name"] == "sale_order")
+    assert so["gain"] is not None and so["gain"] < search.PlanParams().min_coverage_gain
+    assert "sale_order" not in names(p)
+
+
+def test_coverage_crm_pipeline_by_stage(synonyms):
+    p = plan_coverage("Expected revenue in the CRM pipeline by stage", synonyms)
+    assert names(p)[0] == "crm_lead"
+    assert "crm_stage" in names(p)
+    assert "utm_stage" not in names(p)
+
+
+def test_coverage_top_customers_by_revenue(synonyms):
+    p = plan_coverage("Top 5 customers by revenue", synonyms)
+    assert "res_partner" in names(p)
+    assert "sale_order" in names(p) or "account_move" in names(p)
+    assert "account_tax" not in names(p)
+
+
+def test_coverage_value_still_brings_its_table(synonyms):
+    p = plan_coverage("How many customers do we have in Morocco?", synonyms)
+    assert {"res_partner", "res_country"} <= set(names(p))
+
+
+def test_legacy_mode_is_unchanged_without_coverage_input(synonyms):
+    p = plan("Customers with the highest unpaid invoice amount, by salesperson", synonyms)
+    assert p["mode"] == "legacy"
+    assert all(t["elements"] is None for t in p["tables"])
