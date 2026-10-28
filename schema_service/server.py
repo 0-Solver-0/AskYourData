@@ -29,6 +29,7 @@ from . import search
 from .accounts import default_account_from_env, sync_default_account
 from .filters import load_filter_config
 from .indexer import index_account, index_report, reindex_table_embeddings
+from .search_data import load_element_sims, load_search_data
 
 # ── Logging ────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -116,56 +117,11 @@ def get_source_conn(account: dict):
     )
 
 
-# ── Recherche de schéma ────────────────────────────────────────────────────
-def load_search_data(conn, account_id: int, q_vector: list[float]):
-    """
-    Charge en une fois, pour un compte : tables (avec similarité à la question),
-    colonnes (avec similarité) et relations. Quelques centaines de tables : quelques ms.
-    """
-    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-        cur.execute("""
-            SELECT id, table_name, odoo_model, label, odoo_label, synonyms, domain, description, row_count,
-                   CASE WHEN embedding IS NULL THEN 0 ELSE 1 - (embedding <=> %s::vector) END AS similarity
-            FROM nl2sql_tables WHERE account_id = %s
-        """, (q_vector, account_id))
-        tables = [dict(r) for r in cur.fetchall()]
-        cur.execute("""
-            SELECT t.table_name, c.column_name, c.data_type, c.is_pk, c.is_fk, c.is_nullable,
-                   c.label, c.synonyms, c.display, c.odoo_label, c.odoo_type, c.selection_values,
-                   CASE WHEN c.embedding IS NULL THEN 0 ELSE 1 - (c.embedding <=> %s::vector) END AS similarity
-            FROM nl2sql_columns c JOIN nl2sql_tables t ON t.id = c.table_id
-            WHERE t.account_id = %s
-            ORDER BY t.table_name, c.id
-        """, (q_vector, account_id))
-        columns_by_table: dict[str, list[dict]] = {}
-        for r in cur.fetchall():
-            columns_by_table.setdefault(r["table_name"], []).append(dict(r))
-        cur.execute("""
-            SELECT from_table, from_column, to_table, to_column, label, join_hint
-            FROM nl2sql_relations WHERE account_id = %s
-        """, (account_id,))
-        relations = [dict(r) for r in cur.fetchall()]
-        cur.execute("""
-            SELECT table_name, column_name, value, normalized
-            FROM nl2sql_values WHERE account_id = %s
-        """, (account_id,))
-        values = [dict(r) for r in cur.fetchall()]
-
-    candidates = []
-    for t in tables:
-        cols = columns_by_table.get(t["table_name"], [])
-        candidates.append(search.TableCandidate(
-            id=t["id"],
-            table_name=t["table_name"],
-            row_count=t["row_count"],
-            core_tokens=search.table_core_tokens(t),
-            column_tokens=search.column_tokens(cols),
-            vector_score=float(t["similarity"] or 0),
-            column_vector_score=max((float(c["similarity"] or 0) for c in cols
-                                     if c["column_name"] not in search.NOISE_COLUMNS), default=0.0),
-        ))
-    tables_by_name = {t["table_name"]: t for t in tables}
-    return candidates, tables_by_name, columns_by_table, relations, values
+def search_mode(requested: str = None) -> str:
+    mode = (requested or os.getenv("SEARCH_MODE", "legacy")).strip().lower()
+    if mode not in ("legacy", "coverage"):
+        raise ValueError(f"search_mode inconnu : {mode} (legacy | coverage)")
+    return mode
 
 
 def plan_params() -> search.PlanParams:
@@ -174,6 +130,11 @@ def plan_params() -> search.PlanParams:
         max_tables=int(os.getenv("SEARCH_MAX_TABLES", "10")),
         max_columns=int(os.getenv("SEARCH_MAX_COLUMNS", "15")),
         token_budget=int(os.getenv("SCHEMA_TOKEN_BUDGET", "3000")),
+        candidate_tables=int(os.getenv("SEARCH_CANDIDATE_TABLES", "10")),
+        coverage_weight=float(os.getenv("SEARCH_COVERAGE_WEIGHT", "0.6")),
+        min_element_strength=float(os.getenv("SEARCH_MIN_ELEMENT_STRENGTH", "0.3")),
+        cover_ratio=float(os.getenv("SEARCH_COVER_RATIO", "0.8")),
+        min_coverage_gain=float(os.getenv("SEARCH_MIN_COVERAGE_GAIN", "0.15")),
     )
 
 
@@ -215,21 +176,40 @@ def select():
         return jsonify({"error": "'question' obligatoire"}), 400
     if not account_id:
         return jsonify({"error": "'account_id' obligatoire"}), 400
+    try:
+        mode = search_mode(data.get("search_mode"))
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
 
     try:
         t0       = time.time()
+        params   = plan_params()
         query    = search.build_query(question, search.load_synonyms())
-        q_vector = embed_one(query.expanded_text())   # une seule fois par question
+        # legacy : question + synonymes dans un seul vecteur ; coverage : la question telle quelle
+        q_vector = embed_one(query.expanded_text() if mode == "legacy" else question)
 
         conn = get_conn()
-        candidates, tables_by_name, columns_by_table, relations, values = load_search_data(conn, account_id, q_vector)
-        conn.close()
-        if not candidates:
-            return jsonify({"error": "Aucune table indexée — lancez /index d'abord"}), 404
+        try:
+            candidates, tables_by_name, columns_by_table, relations, values = \
+                load_search_data(conn, account_id, q_vector)
+            if not candidates:
+                return jsonify({"error": "Aucune table indexée — lancez /index d'abord"}), 404
+            coverage = None
+            if mode == "coverage":
+                names    = search.table_candidates(query, candidates, params.candidate_tables)
+                elements = search.question_elements(query)
+                vectors  = embed(elements) if elements else []
+                coverage = search.CoverageInput(
+                    elements=elements,
+                    element_sims=load_element_sims(conn, account_id, names, vectors),
+                    candidate_tables=names,
+                )
+        finally:
+            conn.close()
 
         value_matches = search.match_values(question, values)
-        plan = search.plan_schema(query, candidates, tables_by_name, columns_by_table, relations, plan_params(),
-                                  value_matches)
+        plan = search.plan_schema(query, candidates, tables_by_name, columns_by_table, relations, params,
+                                  value_matches, coverage)
         elapsed = round(time.time() - t0, 3)
         logger.info("✅ Select en %ss | %d tables | ~%d tokens",
                     elapsed, len(plan["tables"]), plan["token_estimate"])
@@ -243,12 +223,16 @@ def select():
             "schema_ddl": plan["schema_ddl"],
             "relations": plan["relations"],
             "token_estimate": plan["token_estimate"],
+            "search_mode": mode,
             "elapsed_s": elapsed,
         }
         if debug:
             response["debug"] = {
+                "mode": mode,
                 "query_terms": {t: sorted(v) for t, v in query.expansions.items()},
-                "encoded_text": query.expanded_text(),
+                "encoded_text": query.expanded_text() if mode == "legacy" else question,
+                "elements": plan.get("elements"),
+                "candidate_tables": coverage.candidate_tables if coverage else None,
                 "tables": plan["tables"],
                 "ranking": plan["ranking"],
                 "value_matches": plan["value_matches"],

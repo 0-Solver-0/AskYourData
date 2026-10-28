@@ -85,6 +85,13 @@ services:
       SEARCH_MAX_TABLES:   "10"
       SEARCH_MAX_COLUMNS:  "15"
       SCHEMA_TOKEN_BUDGET: "3000"
+      # legacy (score unique) | coverage (tables puis colonnes par table, rareté, couverture)
+      SEARCH_MODE:         ${SEARCH_MODE:-legacy}
+      SEARCH_CANDIDATE_TABLES:     ${SEARCH_CANDIDATE_TABLES:-10}
+      SEARCH_COVERAGE_WEIGHT:      ${SEARCH_COVERAGE_WEIGHT:-0.6}
+      SEARCH_MIN_ELEMENT_STRENGTH: ${SEARCH_MIN_ELEMENT_STRENGTH:-0.3}
+      SEARCH_COVER_RATIO:          ${SEARCH_COVER_RATIO:-0.8}
+      SEARCH_MIN_COVERAGE_GAIN:    ${SEARCH_MIN_COVERAGE_GAIN:-0.15}
       OMP_NUM_THREADS:     "8"
       TOKENIZERS_PARALLELISM: "false"
       CUDA_VISIBLE_DEVICES: ""
