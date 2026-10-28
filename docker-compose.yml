@@ -2,6 +2,8 @@
 #  AskYourData — docker-compose.yml
 #  Services : postgres_nl2sql (pgvector), schema_service, api_service
 #  Aucun GPU requis : les LLM sont appelés via API (voir documentation/ARCHITECTURE.md)
+#  GPU NVIDIA en option pour l'embedder :
+#    docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build
 #
 #  Prérequis : démarrer d'abord docker-compose.odoo.yml, qui crée le réseau nl2sql_net
 # ══════════════════════════════════════════════════════════════════════════════
@@ -53,7 +55,7 @@ services:
       start_period: 30s
 
   # ─────────────────────────────────────────────────────────────────────────
-  # schema_service — indexation + recherche de schéma (embedder local, CPU)
+  # schema_service — indexation + recherche de schéma (embedder local, CPU ou GPU)
   # ─────────────────────────────────────────────────────────────────────────
   schema_service:
     <<: *common-cpu
@@ -62,11 +64,15 @@ services:
     ports:
       - "8002:8002"
     volumes:
-      - ./models/all-MiniLM-L6-v2:/app/models/all-MiniLM-L6-v2:ro
+      # Tous les modèles locaux : le modèle utilisé est choisi par EMBEDDER_MODEL_PATH
+      - ./models:/app/models:ro
       # Filtres d'indexation modifiables sans reconstruire l'image
       - ./config:/app/config:ro
     environment:
-      MINILM_MODEL_PATH:   /app/models/all-MiniLM-L6-v2
+      # Embedder (voir schema_service/embedder.py) : changer de modèle impose de relancer /index
+      EMBEDDER_MODEL_PATH: /app/models/${EMBEDDER_MODEL:-all-MiniLM-L6-v2}
+      EMBEDDER_DEVICE:     ${EMBEDDER_DEVICE:-cpu}
+      EMBEDDER_DIM:        ${EMBEDDER_DIM:-}
       INDEX_FILTERS_PATH:  /app/config/index_filters.yaml
       NL2SQL_DB_HOST:      postgres_nl2sql
       NL2SQL_DB_PORT:      "5432"
@@ -92,16 +98,17 @@ services:
       SEARCH_MIN_ELEMENT_STRENGTH: ${SEARCH_MIN_ELEMENT_STRENGTH:-0.3}
       SEARCH_COVER_RATIO:          ${SEARCH_COVER_RATIO:-0.8}
       SEARCH_MIN_COVERAGE_GAIN:    ${SEARCH_MIN_COVERAGE_GAIN:-0.15}
+      SEARCH_ELEMENT_CONTEXT:      ${SEARCH_ELEMENT_CONTEXT:-2}
       OMP_NUM_THREADS:     "8"
       TOKENIZERS_PARALLELISM: "false"
-      CUDA_VISIBLE_DEVICES: ""
     depends_on:
       postgres_nl2sql:
         condition: service_healthy
     deploy:
       resources:
         limits:
-          memory: 2G
+          # MiniLM tient dans 1 Go ; Qwen3-Embedding-0.6B sur CPU demande ~4 Go
+          memory: ${SCHEMA_SERVICE_MEMORY:-4G}
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
       interval: 10s

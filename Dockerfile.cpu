@@ -2,8 +2,11 @@
 #  AskYourData — Dockerfile.cpu (seule image du projet)
 #  Utilisé par : schema_service (embedder local) + api_service (Flask)
 #
-#  Python 3.11 slim, sans CUDA. PyTorch est installé en version CPU uniquement
-#  (dépendance de sentence-transformers) pour garder une image légère.
+#  Python 3.11 slim. PyTorch est installé en version CPU par défaut (image légère).
+#  Variante GPU : TORCH_INDEX_URL=https://download.pytorch.org/whl/cu128
+#  (voir docker-compose.gpu.yml). cu128 est nécessaire pour les RTX 50xx (Blackwell).
+#  Les paquets CUDA de PyTorch embarquent leurs bibliothèques : seul le pilote NVIDIA
+#  de l'hôte est requis, pas d'image de base CUDA.
 # ══════════════════════════════════════════════════════════════════════════════
 
 FROM python:3.11-slim AS base
@@ -24,16 +27,21 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # ── Dépendances Python ────────────────────────────────────────────────────────
 FROM base AS deps
 
+ARG TORCH_VERSION=2.7.1
+ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cpu
+
 WORKDIR /deps
 
+# transformers ≥ 4.51 : nécessaire pour Qwen3-Embedding
 RUN pip install --upgrade pip && \
-    pip install torch --index-url https://download.pytorch.org/whl/cpu && \
+    pip install "torch==${TORCH_VERSION}" --index-url "${TORCH_INDEX_URL}" && \
     pip install \
         flask==3.0.3 \
         gunicorn==22.0.0 \
         requests==2.32.3 \
         python-dotenv==1.0.1 \
-        sentence-transformers==3.0.1 \
+        transformers==4.53.2 \
+        sentence-transformers==4.1.0 \
         psycopg2-binary==2.9.9 \
         pgvector==0.3.2 \
         pyyaml==6.0.2
@@ -53,8 +61,7 @@ COPY config/         ./config/
 
 ENV PYTHONPATH=/app \
     OMP_NUM_THREADS=8 \
-    TOKENIZERS_PARALLELISM=false \
-    CUDA_VISIBLE_DEVICES=""
+    TOKENIZERS_PARALLELISM=false
 
 EXPOSE 8002 5000
 

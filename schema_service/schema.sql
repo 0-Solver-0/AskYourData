@@ -106,6 +106,13 @@ CREATE TABLE IF NOT EXISTS nl2sql_values (
     UNIQUE(account_id, table_name, column_name, value)
 );
 
+-- v5 : informations sur l'index (modèle d'embedding utilisé, dimension)
+CREATE TABLE IF NOT EXISTS nl2sql_meta (
+    key        VARCHAR(100) PRIMARY KEY,
+    value      TEXT,
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+
 -- ── Index ─────────────────────────────────────────────────────────────────────
 CREATE INDEX IF NOT EXISTS idx_nl2sql_tables_embedding
     ON nl2sql_tables USING hnsw (embedding vector_cosine_ops);

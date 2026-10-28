@@ -302,3 +302,35 @@ def test_coverage_search_reads_element_similarities(dbs):
                                                               fake_embed(search.question_elements(query))))
     plan = search.plan_schema(query, candidates, tables, cols, rels, search.PlanParams(), [], cov)
     assert plan["mode"] == "coverage" and plan["tables"]
+
+
+def test_vector_space_follows_the_embedder(dbs):
+    from schema_service.vector_space import current_dimension, ensure_vector_space, get_meta
+
+    src, nl, account = dbs
+    index_account(nl, src, account, fake_embed, load_filter_config(CONFIG_PATH))
+    assert current_dimension(nl) == 384
+
+    # Index existant sans modèle enregistré : c'était MiniLM, rien ne change
+    state = ensure_vector_space(nl, 384, "all-MiniLM-L6-v2")
+    assert state == {"dimension_changed": False, "model_changed": False, "reindex_required": False}
+    assert get_meta(nl, "embedder_model") == "all-MiniLM-L6-v2"
+
+    # Autre modèle de même dimension : vecteurs vidés
+    state = ensure_vector_space(nl, 384, "bge-small-en-v1.5")
+    assert state["model_changed"] and state["reindex_required"]
+
+    # Autre dimension : type des colonnes changé, index recréés, réindexation possible
+    state = ensure_vector_space(nl, 8, "Qwen3-Embedding-0.6B@8")
+    assert state["dimension_changed"] and state["reindex_required"]
+    assert current_dimension(nl, "nl2sql_tables") == 8 and current_dimension(nl, "nl2sql_columns") == 8
+
+    def small_embed(texts):
+        return [v[:8] for v in fake_embed(texts)]
+
+    index_account(nl, src, account, small_embed, load_filter_config(CONFIG_PATH))
+    assert ensure_vector_space(nl, 8, "Qwen3-Embedding-0.6B@8")["reindex_required"] is False
+
+    # Remise à l'état d'origine pour les autres tests
+    ensure_vector_space(nl, 384, "all-MiniLM-L6-v2")
+    index_account(nl, src, account, fake_embed, load_filter_config(CONFIG_PATH))

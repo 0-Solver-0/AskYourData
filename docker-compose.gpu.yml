@@ -1,0 +1,29 @@
+# ══════════════════════════════════════════════════════════════════════════════
+#  AskYourData — docker-compose.gpu.yml (option)
+#  Donne un GPU NVIDIA à schema_service pour l'embedder (Qwen3-Embedding, reranker…).
+#
+#  docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build
+#
+#  Prérequis : pilote NVIDIA sur l'hôte et accès GPU pour Docker
+#  (Windows : Docker Desktop + WSL2 ; test : docker run --rm --gpus all <image cuda> nvidia-smi).
+#  PyTorch cu128 : compatible RTX 50xx (Blackwell) et cartes plus anciennes.
+# ══════════════════════════════════════════════════════════════════════════════
+
+services:
+  schema_service:
+    build:
+      args:
+        TORCH_INDEX_URL: https://download.pytorch.org/whl/cu128
+    environment:
+      EMBEDDER_DEVICE: ${EMBEDDER_DEVICE_GPU:-cuda}
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    deploy:
+      resources:
+        limits:
+          memory: ${SCHEMA_SERVICE_MEMORY_GPU:-6G}
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
