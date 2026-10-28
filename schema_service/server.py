@@ -145,6 +145,11 @@ def load_search_data(conn, account_id: int, q_vector: list[float]):
             FROM nl2sql_relations WHERE account_id = %s
         """, (account_id,))
         relations = [dict(r) for r in cur.fetchall()]
+        cur.execute("""
+            SELECT table_name, column_name, value, normalized
+            FROM nl2sql_values WHERE account_id = %s
+        """, (account_id,))
+        values = [dict(r) for r in cur.fetchall()]
 
     candidates = []
     for t in tables:
@@ -160,7 +165,7 @@ def load_search_data(conn, account_id: int, q_vector: list[float]):
                                      if c["column_name"] not in search.NOISE_COLUMNS), default=0.0),
         ))
     tables_by_name = {t["table_name"]: t for t in tables}
-    return candidates, tables_by_name, columns_by_table, relations
+    return candidates, tables_by_name, columns_by_table, relations, values
 
 
 def plan_params() -> search.PlanParams:
@@ -217,12 +222,14 @@ def select():
         q_vector = embed_one(query.expanded_text())   # une seule fois par question
 
         conn = get_conn()
-        candidates, tables_by_name, columns_by_table, relations = load_search_data(conn, account_id, q_vector)
+        candidates, tables_by_name, columns_by_table, relations, values = load_search_data(conn, account_id, q_vector)
         conn.close()
         if not candidates:
             return jsonify({"error": "Aucune table indexée — lancez /index d'abord"}), 404
 
-        plan = search.plan_schema(query, candidates, tables_by_name, columns_by_table, relations, plan_params())
+        value_matches = search.match_values(question, values)
+        plan = search.plan_schema(query, candidates, tables_by_name, columns_by_table, relations, plan_params(),
+                                  value_matches)
         elapsed = round(time.time() - t0, 3)
         logger.info("✅ Select en %ss | %d tables | ~%d tokens",
                     elapsed, len(plan["tables"]), plan["token_estimate"])
@@ -244,6 +251,7 @@ def select():
                 "encoded_text": query.expanded_text(),
                 "tables": plan["tables"],
                 "ranking": plan["ranking"],
+                "value_matches": plan["value_matches"],
             }
         return jsonify(response)
 

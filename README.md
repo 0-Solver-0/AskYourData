@@ -96,9 +96,10 @@ curl -X POST http://localhost:5000/api/v1/translate \
 
 Pour chaque question, `schema_service` (sans LLM, quelques millisecondes) :
 1. note chaque table : similarité des vecteurs (table et meilleure colonne), correspondance de mots avec les libellés Odoo et le vocabulaire métier de [`config/search_synonyms.yaml`](config/search_synonyms.yaml), petit bonus pour les tables remplies et malus pour les tables vides ;
-2. garde les meilleures tables, ajoute les **tables de jointure** (plus court chemin dans le graphe des clés étrangères) et les **tables de référence** citées par la question (« customer » → `sale_order.partner_id` → `res_partner`) ;
-3. ne garde que les colonnes utiles (clés, colonnes citées, nom, état, dates, montants, plus proches de la question) ;
-4. produit un schéma compact commenté (libellés Odoo, valeurs possibles des champs à choix, champs JSON traduisibles), sous un budget de tokens (`SCHEMA_TOKEN_BUDGET`).
+2. reconnaît les **valeurs citées** dans la question (noms de pays, d'étapes, de clients… indexés à partir de la colonne `name` des petites tables : « Morocco » → `res_country`) ;
+3. garde les meilleures tables, ajoute les **tables de jointure** (plus court chemin dans le graphe des clés étrangères) et les **tables de référence** citées par la question (« customer » → `sale_order.partner_id` → `res_partner`) ;
+4. ne garde que les colonnes utiles (clés, colonnes citées, nom, état, dates, montants, plus proches de la question) ;
+5. produit un schéma compact commenté (libellés Odoo, valeurs possibles des champs à choix, champs JSON traduisibles), sous un budget de tokens (`SCHEMA_TOKEN_BUDGET`).
 
 Diagnostic : `POST /api/v1/schema/debug {"question": "...", "account_id": 1}` montre pour chaque table la raison du choix (`search`, `join:…`, `lookup:…`), le détail des scores, les colonnes gardées et le classement.
 

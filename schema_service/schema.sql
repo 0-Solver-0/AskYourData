@@ -94,6 +94,18 @@ CREATE TABLE IF NOT EXISTS nl2sql_index_exclusions (
     UNIQUE(account_id, table_name)
 );
 
+-- ── Valeurs de référence (noms de pays, d'étapes, de clients…) ───────────────
+-- Permettent de reconnaître une valeur citée dans la question (« Morocco » → res_country).
+CREATE TABLE IF NOT EXISTS nl2sql_values (
+    id          SERIAL PRIMARY KEY,
+    account_id  INT NOT NULL REFERENCES nl2sql_accounts(id) ON DELETE CASCADE,
+    table_name  VARCHAR(200) NOT NULL,
+    column_name VARCHAR(200) NOT NULL,
+    value       TEXT NOT NULL,
+    normalized  TEXT NOT NULL,
+    UNIQUE(account_id, table_name, column_name, value)
+);
+
 -- ── Index ─────────────────────────────────────────────────────────────────────
 CREATE INDEX IF NOT EXISTS idx_nl2sql_tables_embedding
     ON nl2sql_tables USING hnsw (embedding vector_cosine_ops);
@@ -102,6 +114,7 @@ CREATE INDEX IF NOT EXISTS idx_nl2sql_columns_embedding
 CREATE INDEX IF NOT EXISTS idx_nl2sql_tables_account    ON nl2sql_tables(account_id);
 CREATE INDEX IF NOT EXISTS idx_nl2sql_columns_table     ON nl2sql_columns(table_id);
 CREATE INDEX IF NOT EXISTS idx_nl2sql_relations_account ON nl2sql_relations(account_id);
+CREATE INDEX IF NOT EXISTS idx_nl2sql_values_account    ON nl2sql_values(account_id);
 
 -- ── Compte de démo Odoo (créé une seule fois) ─────────────────────────────────
 INSERT INTO nl2sql_accounts (name, pg_host, pg_port, pg_db, pg_user, pg_schema)

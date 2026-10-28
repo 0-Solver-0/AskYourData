@@ -21,6 +21,7 @@ from __future__ import annotations
 import math
 import os
 import re
+import unicodedata
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Optional
@@ -57,7 +58,52 @@ STOPWORDS = {
     "last", "year", "month", "week", "day", "quarter", "today", "current", "per", "any",
 }
 
+# Mots courants qui sont aussi des valeurs fréquentes dans Odoo (étapes, types, équipes…)
+COMMON_VALUE_WORDS = {
+    "new", "won", "lost", "sale", "sales", "contact", "invoice", "draft", "done", "cancel", "open",
+    "other", "service", "product", "stock", "general", "bank", "cash", "customer", "vendor", "partner",
+    "unit", "units", "day", "days", "hour", "hours", "europe", "america", "asia", "africa", "oceania",
+}
+
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
+
+
+# ── Valeurs citées dans la question ──────────────────────────────────────────
+
+def normalize_text(text: str) -> str:
+    """Minuscules, sans accents ni ponctuation, espaces simples : « Côte d'Ivoire » → « cote d ivoire »."""
+    text = unicodedata.normalize("NFKD", str(text)).encode("ascii", "ignore").decode()
+    return " ".join(re.sub(r"[^a-z0-9]+", " ", text.lower()).split())
+
+
+@dataclass
+class ValueMatch:
+    table_name: str
+    column_name: str
+    value: str
+
+
+def match_values(question: str, values: list[dict], max_tables: int = 2) -> list[ValueMatch]:
+    """
+    Valeurs connues citées telles quelles dans la question (mot entier), les plus longues d'abord.
+    Les valeurs d'un seul mot courant (« New », « Sales »…) sont ignorées : trop ambiguës.
+    Au plus une valeur par table et `max_tables` tables.
+    """
+    q = f" {normalize_text(question)} "
+    matches: list[ValueMatch] = []
+    seen_tables: set[str] = set()
+    for v in sorted(values, key=lambda v: len(v["normalized"]), reverse=True):
+        norm = v["normalized"]
+        if v["table_name"] in seen_tables:
+            continue
+        if " " not in norm and (norm in STOPWORDS or norm in COMMON_VALUE_WORDS):
+            continue
+        if f" {norm} " in q:
+            matches.append(ValueMatch(v["table_name"], v["column_name"], v["value"]))
+            seen_tables.add(v["table_name"])
+            if len(matches) >= max_tables:
+                break
+    return matches
 
 
 # ── Vocabulaire ──────────────────────────────────────────────────────────────
@@ -313,7 +359,7 @@ def _is_amount(col: dict) -> bool:
 
 # Colonnes souvent indispensables pour filtrer ou nommer (si elles existent)
 ESSENTIAL_COLUMNS = ("name", "state", "stage_id", "type", "move_type", "payment_state", "invoice_status",
-                     "probability", "date", "date_order", "invoice_date")
+                     "probability", "amount_total", "date", "date_order", "invoice_date")
 
 
 def select_columns(table: str, columns: list[dict], query: Query, join_columns: set[str],
@@ -387,11 +433,12 @@ def column_comment(col: dict) -> str:
 
 
 def render_table(table: dict, cols: list[tuple[dict, str]], relations: list[dict],
-                 selected: set[str]) -> str:
+                 selected: set[str], value_notes: Optional[list[str]] = None) -> str:
     header = f"CREATE TABLE {table['table_name']} ("
     label = table.get("label") or table.get("odoo_label")
     desc = table.get("description")
-    comment = " — ".join(x for x in (label, (desc or "")[:160]) if x)
+    notes = "; ".join(value_notes or [])
+    comment = " — ".join(x for x in (label, (desc or "")[:160], notes) if x)
     if comment:
         header += f"  -- {comment}"
 
@@ -459,7 +506,7 @@ class PlanParams:
 
 def plan_schema(query: Query, candidates: list[TableCandidate], tables_by_name: dict[str, dict],
                 columns_by_table: dict[str, list[dict]], relations: list[dict],
-                params: PlanParams) -> dict:
+                params: PlanParams, value_matches: Optional[list[ValueMatch]] = None) -> dict:
     """
     Choisit tables et colonnes, construit le schéma compact et respecte le budget de tokens.
     Retourne {"tables": [...], "schema_ddl": str, "token_estimate": int, "relations": [...]}.
@@ -481,9 +528,19 @@ def plan_schema(query: Query, candidates: list[TableCandidate], tables_by_name: 
              if t not in seed_names}
     lookups = lookup_tables(query, columns_by_table, relations, seed_names, tables_by_name)
 
+    value_matches = [m for m in (value_matches or []) if m.table_name in tables_by_name]
+    values_by_table: dict[str, list[ValueMatch]] = {}
+    for m in value_matches:
+        values_by_table.setdefault(m.table_name, []).append(m)
+
     order: list[tuple[str, str]] = [(n, "search") for n in seed_names]
     order += [(t, r) for t, r in joins.items()]
-    order += [(t, r) for t, r in lookups.items() if t not in joins]
+    taken = set(seed_names) | set(joins)
+    for m in value_matches:                     # une valeur citée (« Morocco ») amène sa table
+        if m.table_name not in taken:
+            order.append((m.table_name, f"value:{m.table_name}.{m.column_name}"))
+            taken.add(m.table_name)
+    order += [(t, r) for t, r in lookups.items() if t not in taken]
     order = [(t, r) for t, r in order if t in tables_by_name][:params.max_tables]
     selected = {t for t, _ in order}
 
@@ -498,9 +555,13 @@ def plan_schema(query: Query, candidates: list[TableCandidate], tables_by_name: 
     while True:
         planned = []
         for name, reason in order:
-            cols = select_columns(name, columns_by_table.get(name, []), query, join_cols.get(name, set()), max_cols)
+            forced = join_cols.get(name, set()) | {m.column_name for m in values_by_table.get(name, [])}
+            cols = select_columns(name, columns_by_table.get(name, []), query, forced, max_cols)
             planned.append((name, reason, cols))
-        ddl = "\n\n".join(render_table(tables_by_name[n], cols, used_relations, selected) for n, _, cols in planned)
+        ddl = "\n\n".join(
+            render_table(tables_by_name[n], cols, used_relations, selected,
+                         [f"question mentions {m.column_name} = '{m.value}'" for m in values_by_table.get(n, [])])
+            for n, _, cols in planned)
         tokens = estimate_tokens(ddl)
         if tokens <= params.token_budget:
             break
@@ -508,7 +569,8 @@ def plan_schema(query: Query, candidates: list[TableCandidate], tables_by_name: 
             max_cols -= 2                       # d'abord moins de colonnes par table
             continue
         droppable = [i for i, (n, r) in enumerate(order) if r == "search" and i >= 2]
-        droppable = droppable or [i for i, (n, r) in enumerate(order) if not r.startswith("join") and i >= 1]
+        droppable = droppable or [i for i, (n, r) in enumerate(order)
+                                  if not r.startswith(("join", "value")) and i >= 1]
         if not droppable:
             break
         removed = order.pop(droppable[-1])[0]  # puis la table la moins bien classée
@@ -537,4 +599,6 @@ def plan_schema(query: Query, candidates: list[TableCandidate], tables_by_name: 
         "token_estimate": tokens,
         "relations": [r for r in used_relations if r["from_table"] in selected and r["to_table"] in selected],
         "ranking": [{"table_name": c.table_name, "score": round(c.score, 3)} for c in ranked[:15]],
+        "value_matches": [{"table_name": m.table_name, "column_name": m.column_name, "value": m.value}
+                          for m in value_matches],
     }

@@ -93,6 +93,10 @@ CATALOG = {
         col("id", pk=True, label="ID"), col("price_subtotal", "numeric", "Subtotal", odoo_type="monetary"),
         col("partner_id", label="Partner", fk=True),
     ]),
+    "res_country": ("res.country", "Country", 250, [
+        col("id", pk=True, label="ID"), col("name", "jsonb", "Country Name", odoo_type="char"),
+        col("code", "character varying", "Country Code"),
+    ]),
     "account_tax": ("account.tax", "Tax", 154, [
         col("id", pk=True, label="ID"), col("amount", "numeric", "Amount"), col("name", "jsonb", "Tax Name"),
     ]),
@@ -115,7 +119,7 @@ RELATIONS = [
     ("account_payment", "partner_id", "res_partner"),
     ("crm_lead", "stage_id", "crm_stage"), ("crm_lead", "user_id", "res_users"),
     ("res_users", "partner_id", "res_partner"), ("purchase_order_line", "partner_id", "res_partner"),
-    ("account_analytic_line", "partner_id", "res_partner"),
+    ("account_analytic_line", "partner_id", "res_partner"), ("res_partner", "country_id", "res_country"),
     ("sale_order", "create_uid", "res_users"), ("crm_lead", "company_id", "res_company"),
 ]
 
@@ -142,10 +146,23 @@ def build_inputs(vector_scores=None):
     return candidates, tables_by_name, columns_by_table, relations
 
 
+VALUES = [
+    {"table_name": "res_country", "column_name": "name", "value": v, "normalized": search.normalize_text(v)}
+    for v in ("Morocco", "France", "Côte d'Ivoire", "United States")
+] + [
+    {"table_name": "crm_stage", "column_name": "name", "value": v, "normalized": search.normalize_text(v)}
+    for v in ("New", "Qualified", "Won")
+] + [
+    {"table_name": "res_partner", "column_name": "name", "value": "Azure Interior",
+     "normalized": "azure interior"},
+]
+
+
 def plan(question, synonyms, params=None, vector_scores=None):
     query = search.build_query(question, synonyms)
     cands, tables, cols, rels = build_inputs(vector_scores)
-    return search.plan_schema(query, cands, tables, cols, rels, params or search.PlanParams())
+    matches = search.match_values(question, VALUES)
+    return search.plan_schema(query, cands, tables, cols, rels, params or search.PlanParams(), matches)
 
 
 def names(p):
@@ -269,3 +286,33 @@ def test_token_budget_is_respected(synonyms):
     small = search.PlanParams(token_budget=400)
     p = plan("Customers with the highest unpaid invoice amount, by salesperson", synonyms, small)
     assert p["token_estimate"] <= 400 or len(p["tables"]) <= 2
+
+
+# ── Valeurs citées ───────────────────────────────────────────────────────────
+
+def test_normalize_text():
+    assert search.normalize_text("Côte d'Ivoire") == "cote d ivoire"
+    assert search.normalize_text("  Azure   Interior! ") == "azure interior"
+
+
+def test_match_values_whole_words_and_accents():
+    found = search.match_values("How many customers do we have in Morocco?", VALUES)
+    assert [(m.table_name, m.value) for m in found] == [("res_country", "Morocco")]
+    found = search.match_values("Invoices of customers in Cote d'Ivoire", VALUES)
+    assert [m.value for m in found] == ["Côte d'Ivoire"]
+    assert search.match_values("Moroccan market", VALUES) == []
+
+
+def test_common_words_are_not_values():
+    # « new » et « won » sont aussi des étapes CRM : trop ambigus seuls
+    assert search.match_values("New customers who won deals", VALUES) == []
+    assert [m.value for m in search.match_values("Leads in the Qualified stage", VALUES)] == ["Qualified"]
+
+
+def test_value_brings_its_table_and_join(synonyms):
+    p = plan("How many customers do we have in Morocco?", synonyms)
+    assert "res_country" in names(p)
+    reasons = {t["table_name"]: t["reason"] for t in p["tables"]}
+    assert reasons["res_country"] in ("search", "value:res_country.name")
+    assert "FOREIGN KEY (country_id) REFERENCES res_country(id)" in p["schema_ddl"]
+    assert "question mentions name = 'Morocco'" in p["schema_ddl"]
