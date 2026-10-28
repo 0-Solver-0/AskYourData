@@ -51,6 +51,7 @@ CREATE TABLE sale_order_line (id serial PRIMARY KEY, order_id int REFERENCES sal
 CREATE TABLE sale_advance_payment_inv (id serial PRIMARY KEY, advance_payment_method varchar);
 CREATE TABLE account_tax_sale_order_line_rel (sale_order_line_id int, account_tax_id int);
 CREATE TABLE custom_table_without_model (id serial PRIMARY KEY, x int);
+CREATE TABLE ir_model_data (id serial PRIMARY KEY, module varchar, name varchar, model varchar, res_id int);
 
 INSERT INTO ir_model (model, name, transient) VALUES
   ('res.partner', '{"en_US": "Contact"}', false),
@@ -62,6 +63,13 @@ INSERT INTO ir_model (model, name, transient) VALUES
   ('sale.advance.payment.inv', '{"en_US": "Sales Advance Payment Invoice"}', true),
   ('mail.message', '{"en_US": "Message"}', false),
   ('ir.ui.view', '{"en_US": "View"}', false);
+
+INSERT INTO ir_model_data (module, name, model, res_id) VALUES
+  ('base', 'model_res_partner', 'ir.model', 1), ('base', 'model_res_country', 'ir.model', 2),
+  ('base', 'model_res_users', 'ir.model', 3), ('sale', 'model_sale_order', 'ir.model', 5),
+  ('sale', 'model_sale_order_line', 'ir.model', 6),
+  ('sale_crm', 'model_sale_order', 'ir.model', 5),      -- extension : ne change pas le module d'origine
+  ('base', 'partner_admin', 'res.partner', 1);
 
 INSERT INTO ir_model_fields (model, name, ttype, relation, field_description, help, store) VALUES
   ('sale.order', 'state', 'selection', NULL, '{"en_US": "Status"}', NULL, true),
@@ -334,3 +342,110 @@ def test_vector_space_follows_the_embedder(dbs):
     # Remise à l'état d'origine pour les autres tests
     ensure_vector_space(nl, 384, "all-MiniLM-L6-v2")
     index_account(nl, src, account, fake_embed, load_filter_config(CONFIG_PATH))
+
+
+def test_odoo_module_is_recorded(dbs):
+    src, nl, account = dbs
+    index_account(nl, src, account, fake_embed, load_filter_config(CONFIG_PATH))
+    with nl.cursor() as cur:
+        cur.execute("SELECT table_name, odoo_module FROM nl2sql_tables WHERE account_id = %s ORDER BY 1",
+                    (account["id"],))
+        modules = dict(cur.fetchall())
+    assert modules["sale_order"] == "sale" and modules["sale_order_line"] == "sale"
+    assert modules["res_partner"] == "base"
+
+
+def test_enrichment_export_import_roundtrip(dbs):
+    import copy
+
+    from schema_service.enrichment import export_schema, import_enrichment, list_modules
+
+    src, nl, account = dbs
+    index_account(nl, src, account, fake_embed, load_filter_config(CONFIG_PATH))
+    assert {m["module"]: m["tables"] for m in list_modules(nl, account["id"])}["sale"] == 2
+
+    data = export_schema(nl, account["id"], module="sale")
+    assert data["format"] == "askyourdata-enrichment"
+    tables = {t["table_name"]: t for t in data["tables"]}
+    assert set(tables) == {"sale_order", "sale_order_line"}
+    so = tables["sale_order"]
+    assert so["odoo_label"] == "Sales Order" and "sale_order_line.order_id" in so["referenced_by"]
+    cols = {c["column_name"]: c for c in so["columns"]}
+    assert "id" not in cols and "create_uid" not in cols                     # techniques masquées
+    assert cols["partner_id"]["references"] == "res_partner.id"
+    assert cols["state"]["values"].startswith("draft=Quotation")
+    assert set(so["enrich"]) == {"label", "description", "synonyms", "domain"}   # valeurs actuelles pré-remplies
+
+    with nl.cursor() as cur:
+        cur.execute("""SELECT embedding FROM nl2sql_tables WHERE account_id = %s AND table_name = 'sale_order'""",
+                    (account["id"],))
+        before = cur.fetchone()[0]
+
+    filled = copy.deepcopy(data)
+    for t in filled["tables"]:
+        if t["table_name"] == "sale_order":
+            t["enrich"]["description"] = "Customer quotations and confirmed sales orders."
+            t["enrich"]["synonyms"] = ["orders", "quotations", "sales"]
+            t["enrich"]["unknown_field"] = "x"
+            next(c for c in t["columns"] if c["column_name"] == "amount_total")["enrich"]["notes"] = \
+                "Total including taxes"
+    filled["tables"].append({"table_name": "does_not_exist", "enrich": {"description": "x"}})
+
+    # Simulation : rapport complet, rien d'écrit
+    report = import_enrichment(nl, account["id"], filled, dry_run=True)
+    assert report["tables_changed"] == ["sale_order"] and report["fields_changed"] == 3
+    assert report["unknown_tables"] == ["does_not_exist"]
+    assert report["ignored_fields"] == ["table.unknown_field"]
+    assert report["changed_table_ids"] == []
+    assert export_schema(nl, account["id"], tables=["sale_order"])["tables"][0]["enrich"]["description"] == \
+        so["enrich"]["description"]
+
+    # Import réel
+    report = import_enrichment(nl, account["id"], filled)
+    assert len(report["changed_table_ids"]) == 1
+    for table_id in report["changed_table_ids"]:
+        reindex_table_embeddings(nl, table_id, fake_embed)
+    again = export_schema(nl, account["id"], tables=["sale_order"])["tables"][0]
+    assert again["enrich"]["synonyms"] == "orders, quotations, sales"
+    assert again["enriched_by"] == "manual"
+    with nl.cursor() as cur:
+        cur.execute("""SELECT embedding FROM nl2sql_tables WHERE account_id = %s AND table_name = 'sale_order'""",
+                    (account["id"],))
+        after = cur.fetchone()[0]
+    assert str(before) != str(after)                                         # fiche réencodée
+
+    # Réimporter le même fichier ne change rien ; une réindexation ne l'écrase pas
+    assert import_enrichment(nl, account["id"], filled)["fields_changed"] == 0
+    index_account(nl, src, account, fake_embed, load_filter_config(CONFIG_PATH))
+    kept = export_schema(nl, account["id"], tables=["sale_order"])["tables"][0]
+    assert kept["enrich"]["description"] == "Customer quotations and confirmed sales orders."
+
+    # Chaîne vide : efface
+    for t in filled["tables"]:
+        if t["table_name"] == "sale_order":
+            t["enrich"] = {"description": ""}
+    import_enrichment(nl, account["id"], filled)
+    assert export_schema(nl, account["id"], tables=["sale_order"])["tables"][0]["enrich"]["description"] is None
+
+
+def test_enrichment_rejects_unknown_files(dbs):
+    from schema_service.enrichment import import_enrichment
+
+    _, nl, account = dbs
+    with pytest.raises(ValueError):
+        import_enrichment(nl, account["id"], {"tables": []})
+
+
+def test_vector_ranking_orders_by_similarity(dbs):
+    from schema_service.search_data import vector_ranking
+
+    src, nl, account = dbs
+    index_account(nl, src, account, fake_embed, load_filter_config(CONFIG_PATH))
+    with nl.cursor() as cur:
+        cur.execute("SELECT embedding FROM nl2sql_tables WHERE account_id = %s AND table_name = 'res_country'",
+                    (account["id"],))
+        vec = cur.fetchone()[0]
+    vec = vec.to_list() if hasattr(vec, "to_list") else [float(x) for x in vec]
+    ranking = vector_ranking(nl, account["id"], vec, limit=3)
+    assert ranking[0]["table_name"] == "res_country" and ranking[0]["similarity"] == pytest.approx(1.0, abs=1e-3)
+    assert len(ranking) == 3

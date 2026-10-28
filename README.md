@@ -157,6 +157,27 @@ Sans GPU, tout fonctionne sur CPU : le GPU accélère l'indexation et la recherc
 - Les libellés Odoo (nom des modèles et des champs, aide, valeurs possibles des champs à choix) sont récupérés automatiquement.
 - Une réindexation n'écrase jamais les annotations manuelles ni les descriptions.
 
+## Enrichissement par module (export / import)
+
+Le texte d'une table, encodé en vecteur, ne contient au départ que son nom, son libellé Odoo et quelques colonnes. L'enrichissement y ajoute une description et du vocabulaire métier, à la main ou plus tard par le rôle PREP, dans le même format.
+
+```bash
+curl "http://localhost:5000/api/v1/schema/modules?account_id=1"                       # modules Odoo indexés
+curl -o enrichment/account.json "http://localhost:5000/api/v1/schema/export?account_id=1&module=account"
+# remplir les blocs « enrich » (tables : label, description, synonyms, domain ; colonnes : label, synonyms, notes)
+curl -X POST "http://localhost:5000/api/v1/schema/import?account_id=1&dry_run=true" \
+  -H "Content-Type: application/json" --data-binary @enrichment/account.json         # simulation
+curl -X POST "http://localhost:5000/api/v1/schema/import?account_id=1" \
+  -H "Content-Type: application/json" --data-binary @enrichment/account.json         # import + réencodage
+```
+
+- Seuls les blocs `enrich` sont appliqués : `null` = inchangé, `""` = effacé. Une table ou une colonne inconnue est signalée, jamais créée.
+- Seules les tables modifiées sont réencodées, en quelques secondes. Une réindexation n'écrase jamais ces champs.
+- Le module Odoo de chaque table est lu dans `ir_model_data` à l'indexation. Il faut **relancer `/index` une fois** après la mise à jour pour le renseigner.
+- Mesurer l'effet : `schema_search_eval.py` affiche le **rang des tables attendues par vecteur seul** (question brute contre fiches de tables, sans mots ni règles). Des questions nouvelles sur un module se mettent dans un fichier à part (`--file benchmark/account_questions.yaml`).
+
+Détails et règles : [`enrichment/README.md`](enrichment/README.md).
+
 ## Annotations
 
 ```bash

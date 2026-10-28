@@ -44,6 +44,8 @@ ALTER TABLE nl2sql_tables ADD COLUMN IF NOT EXISTS enriched        BOOLEAN DEFAU
 ALTER TABLE nl2sql_tables ADD COLUMN IF NOT EXISTS enriched_by     VARCHAR(200);
 ALTER TABLE nl2sql_tables ADD COLUMN IF NOT EXISTS enriched_at     TIMESTAMP;
 ALTER TABLE nl2sql_tables ADD COLUMN IF NOT EXISTS manual_override BOOLEAN DEFAULT FALSE;
+-- v6 : module Odoo qui définit le modèle (export par module pour l'enrichissement)
+ALTER TABLE nl2sql_tables ADD COLUMN IF NOT EXISTS odoo_module     VARCHAR(100);
 
 -- ── Colonnes indexées ─────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS nl2sql_columns (

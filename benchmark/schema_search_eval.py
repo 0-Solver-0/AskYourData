@@ -4,6 +4,8 @@
 Pour chaque question de benchmark/schema_questions.yaml : appelle /api/v1/schema/debug,
 vérifie que les tables attendues sont bien envoyées au modèle SQL (rappel), compte les tables
 en trop (précision) et affiche la taille du schéma. Compare les modes de recherche.
+Mesure aussi le rang des tables attendues dans le classement par vecteur seul (question brute
+contre fiches de tables, sans mots ni règles) : c'est l'effet direct de l'enrichissement.
 
 Usage :
   python benchmark/schema_search_eval.py [--url http://localhost:5000] [--account 1]
@@ -42,12 +44,24 @@ def useful_tables(expected: list, selected: set) -> set:
     return useful
 
 
+def vector_ranks(expected: list, ranking: list) -> list:
+    """Rang (1 = premier) de chaque table attendue dans le classement par vecteur seul ; None au-delà."""
+    order = {r["table_name"]: i + 1 for i, r in enumerate(ranking or [])}
+    ranks = []
+    for req in expected:
+        options = req if isinstance(req, list) else [req]
+        found = [order[t] for t in options if t in order]
+        ranks.append((options[0] if len(options) == 1 else "|".join(options), min(found) if found else None))
+    return ranks
+
+
 def run(mode: str, cases: list, args) -> dict:
     print(f"\n══ Mode {mode} ══")
     total_req = total_ok = full_hits = 0
     sent = useful_total = 0
     tokens, times = [], []
     embedder = None
+    all_ranks = []
     for case in cases:
         body = {"question": case["question"], "account_id": args.account}
         if mode != "default":
@@ -71,6 +85,9 @@ def run(mode: str, cases: list, args) -> dict:
         tokens.append(data.get("token_estimate") or 0)
         times.append(data.get("elapsed_s") or 0)
 
+        ranks = vector_ranks(case["expected"], data.get("debug", {}).get("vector_ranking"))
+        all_ranks += [r for _, r in ranks]
+
         mark = "✓" if not missing else "✗"
         print(f"{mark} {case['question']}  (rappel {ok}/{len(case['expected'])}, "
               f"précision {len(useful)}/{len(selected)}, ~{data.get('token_estimate')} tokens)")
@@ -79,6 +96,7 @@ def run(mode: str, cases: list, args) -> dict:
             print(f"    manquantes : {missing}")
         if extra:
             print(f"    en trop    : {extra}")
+        print("    vecteur seul : " + ", ".join(f"{t} #{r}" if r else f"{t} >20" for t, r in ranks))
         if args.verbose:
             dbg = data.get("debug", {})
             print("    classement : " + ", ".join(
@@ -101,6 +119,9 @@ def run(mode: str, cases: list, args) -> dict:
         "tables": sent / len(tokens),
         "tokens": sum(tokens) // len(tokens),
         "ms": 1000 * sum(times) / len(times),
+        "top5": sum(1 for r in all_ranks if r and r <= 5),
+        "top10": sum(1 for r in all_ranks if r and r <= 10),
+        "expected": len(all_ranks),
     }
     print(f"── Résumé ({summary['embedder']}) ──")
     print(f"Questions entièrement couvertes : {summary['full']}")
@@ -109,6 +130,8 @@ def run(mode: str, cases: list, args) -> dict:
     print(f"Tables envoyées par question    : {summary['tables']:.1f}")
     print(f"Taille moyenne du schéma        : ~{summary['tokens']} tokens")
     print(f"Temps moyen de recherche        : {summary['ms']:.0f} ms")
+    print(f"Vecteur seul, tables attendues  : top 5 {summary['top5']}/{summary['expected']}, "
+          f"top 10 {summary['top10']}/{summary['expected']}")
     return summary
 
 
@@ -123,7 +146,10 @@ def main() -> int:
     args = parser.parse_args()
 
     with open(args.file, encoding="utf-8") as fh:
-        cases = yaml.safe_load(fh)
+        cases = yaml.safe_load(fh) or []
+    if not cases:
+        print(f"Aucune question dans {args.file}")
+        return 1
 
     modes = ["legacy", "coverage"] if args.mode == "both" else [args.mode]
     summaries = [s for s in (run(m, cases, args) for m in modes) if s]
@@ -136,6 +162,8 @@ def main() -> int:
         for s in summaries:
             print(f"{s['mode']:<10}{s['full']:>11}{s['recall']:>8.0f}%{s['precision']:>10.0f}%"
                   f"{s['tables']:>8.1f}{s['tokens']:>8}{s['ms']:>7.0f}")
+        s = summaries[0]
+        print(f"vecteur seul (question brute) : top 5 {s['top5']}/{s['expected']}, top 10 {s['top10']}/{s['expected']}")
     return 0
 
 

@@ -87,3 +87,19 @@ def load_element_sims(conn, account_id: int, table_names: list[str],
             sims = out.setdefault((table, column), [0.0] * len(element_vectors))
             sims[i] = float(sim)
     return out
+
+
+def vector_ranking(conn, account_id: int, q_vector: list[float], limit: int = 20) -> list[dict]:
+    """
+    Classement des tables par similarité vectorielle seule (sans mots, synonymes ni règles).
+    Mesure directe de la qualité des fiches de tables et de l'embedder.
+    """
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT table_name, 1 - (embedding <=> %s::vector) AS similarity
+            FROM nl2sql_tables
+            WHERE account_id = %s AND embedding IS NOT NULL
+            ORDER BY embedding <=> %s::vector
+            LIMIT %s
+        """, (q_vector, account_id, q_vector, limit))
+        return [{"table_name": t, "similarity": round(float(s), 3)} for t, s in cur.fetchall()]

@@ -6,6 +6,7 @@ Lecture des métadonnées qu'Odoo stocke déjà dans sa base (gratuit, sans LLM)
   ir_model                    → modèle, libellé de la table, modèle transitoire (wizard)
   ir_model_fields             → libellé, aide, type et relation de chaque champ stocké
   ir_model_fields_selection   → valeurs possibles des champs « selection »
+  ir_model_data               → module Odoo qui définit le modèle (account, sale, stock…)
 
 Depuis Odoo 16, les champs traduisibles (name, field_description, help) sont stockés
 en JSONB ({"en_US": "..."}). Les versions plus anciennes les stockent en texte.
@@ -44,6 +45,7 @@ class ModelMeta:
     model: str
     label: Optional[str] = None
     transient: bool = False
+    module: Optional[str] = None
     fields: dict[str, FieldMeta] = field(default_factory=dict)
 
 
@@ -90,10 +92,28 @@ def load_odoo_metadata(src_conn, schema: str = "public") -> dict[str, ModelMeta]
             """
         )
         models_by_name: dict[str, ModelMeta] = {}
+        model_by_id: dict[int, str] = {}
         for r in cur.fetchall():
             models_by_name[r["model"]] = ModelMeta(
                 model=r["model"], label=r["label"], transient=bool(r["transient"]),
             )
+            model_by_id[r["id"]] = r["model"]
+
+        # Module qui définit le modèle : le premier identifiant externe créé pour lui
+        # (les modules qui l'étendent ensuite en ajoutent d'autres)
+        if _column_types(cur, schema, "ir_model_data"):
+            cur.execute(
+                f"""
+                SELECT DISTINCT ON (d.res_id) d.res_id, d.module
+                FROM {sch}.ir_model_data d
+                WHERE d.model = 'ir.model'
+                ORDER BY d.res_id, d.id
+                """
+            )
+            for r in cur.fetchall():
+                name = model_by_id.get(r["res_id"])
+                if name:
+                    models_by_name[name].module = r["module"]
 
         field_types = _column_types(cur, schema, "ir_model_fields")
         fields_by_id: dict[int, tuple[str, str]] = {}

@@ -16,6 +16,9 @@ Endpoints :
   GET  /api/v1/index/report — tables retenues / exclues d'un compte
   POST /api/v1/annotate/table   — annoter une table
   POST /api/v1/annotate/column  — annoter une colonne
+  GET  /api/v1/schema/modules   — modules Odoo de l'index
+  GET  /api/v1/schema/export    — fichier d'enrichissement d'un module (JSON)
+  POST /api/v1/schema/import    — applique un fichier d'enrichissement (dry_run possible)
 """
 
 import logging
@@ -36,6 +39,7 @@ SCHEMA_SERVICE_URL  = os.getenv("SCHEMA_SERVICE_URL",  "http://schema_service:80
 SECRET_KEY          = os.getenv("SECRET_KEY",          "dev-secret")
 
 app = Flask(__name__)
+app.json.sort_keys = False   # garder l'ordre des champs (fichiers d'enrichissement lisibles)
 app.config["SECRET_KEY"] = SECRET_KEY
 
 
@@ -129,6 +133,46 @@ def index():
         return jsonify({"error": "Timeout — indexation trop longue"}), 504
     except ValueError:
         return jsonify({"error": "Réponse invalide du schema_service"}), 502
+
+
+def _proxy(method: str, path: str, timeout: int = 60, **kwargs):
+    """Relaye une requête vers schema_service et renvoie sa réponse telle quelle."""
+    try:
+        resp = requests.request(method, f"{SCHEMA_SERVICE_URL}{path}", timeout=timeout, **kwargs)
+        return jsonify(resp.json()), resp.status_code
+    except requests.exceptions.ConnectionError:
+        return jsonify({"error": "Impossible de joindre le schema_service"}), 503
+    except requests.exceptions.Timeout:
+        return jsonify({"error": "Timeout schema_service"}), 504
+    except ValueError:
+        return jsonify({"error": "Réponse invalide du schema_service"}), 502
+
+
+@app.get("/api/v1/schema/modules")
+def schema_modules():
+    """Modules Odoo de l'index, avec le nombre de tables enrichies. Query : ?account_id=1"""
+    return _proxy("GET", "/modules", params=request.args)
+
+
+@app.get("/api/v1/schema/export")
+def schema_export():
+    """
+    Fichier d'enrichissement d'un module. Query : ?account_id=1&module=account
+    (ou &tables=account_move,sale_order ; &include_technical=true pour toutes les colonnes)
+    """
+    return _proxy("GET", "/export", params=request.args)
+
+
+@app.post("/api/v1/schema/import")
+def schema_import():
+    """
+    Applique un fichier d'enrichissement rempli. Body : le fichier JSON.
+    Query : ?account_id=1&dry_run=true (simulation : liste des changements sans rien écrire)
+    """
+    payload = request.get_json(silent=True)
+    if payload is None:
+        return jsonify({"error": "corps JSON attendu (fichier exporté par /api/v1/schema/export)"}), 400
+    return _proxy("POST", "/import", timeout=300, params=request.args, json=payload)
 
 
 @app.get("/api/v1/index/report")
