@@ -61,34 +61,6 @@ def load_search_data(conn, account_id: int, q_vector: list[float]):
     return candidates, tables_by_name, columns_by_table, relations, values
 
 
-def load_element_sims(conn, account_id: int, table_names: list[str],
-                      element_vectors: list[list[float]]) -> dict[tuple[str, str], list[float]]:
-    """
-    Mode coverage, étape 2 : similarité de chaque élément de la question avec chaque colonne,
-    dans les tables candidates seulement. Une seule requête : {(table, colonne): [sim élément 0, 1…]}.
-    """
-    if not table_names or not element_vectors:
-        return {}
-    values_sql = ", ".join(["(%s, %s::vector)"] * len(element_vectors))
-    params: list = []
-    for i, vec in enumerate(element_vectors):
-        params += [i, vec]
-    params += [account_id, table_names]
-    out: dict[tuple[str, str], list[float]] = {}
-    with conn.cursor() as cur:
-        cur.execute(f"""
-            SELECT t.table_name, c.column_name, e.i, 1 - (c.embedding <=> e.v)
-            FROM nl2sql_columns c
-            JOIN nl2sql_tables t ON t.id = c.table_id
-            CROSS JOIN (VALUES {values_sql}) AS e(i, v)
-            WHERE t.account_id = %s AND t.table_name = ANY(%s) AND c.embedding IS NOT NULL
-        """, params)
-        for table, column, i, sim in cur.fetchall():
-            sims = out.setdefault((table, column), [0.0] * len(element_vectors))
-            sims[i] = float(sim)
-    return out
-
-
 def vector_ranking(conn, account_id: int, q_vector: list[float], limit: int = 20) -> list[dict]:
     """
     Classement des tables par similarité vectorielle seule (sans mots, synonymes ni règles).

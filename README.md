@@ -105,19 +105,7 @@ Pour chaque question, `schema_service` (sans LLM, quelques millisecondes) :
 
 Diagnostic : `POST /api/v1/schema/debug {"question": "...", "account_id": 1}` montre pour chaque table la raison du choix (`search`, `join:…`, `lookup:…`), le détail des scores, les colonnes gardées et le classement.
 
-### Deux modes de choix des tables (`SEARCH_MODE`)
-
-- **`legacy`** (par défaut) : le fonctionnement décrit ci-dessus. Un seul vecteur (question + synonymes) est comparé aux tables et à toutes les colonnes de l'index.
-- **`coverage`** : recherche en deux temps.
-  1. **Tables seules.** La question brute est comparée aux vecteurs des tables, ce qui donne environ 10 candidates (`SEARCH_CANDIDATE_TABLES`).
-  2. **Colonnes, table par table.** Chaque élément de la question (« unpaid », « salesperson »…) est encodé séparément et cherché dans les colonnes de chaque candidate.
-  3. **Poids de la rareté.** Une correspondance pèse selon la rareté de la colonne dans l'index (IDF) : `payment_state` désigne une table, `partner_id` n'en désigne aucune.
-  4. **Sélection par couverture.** On garde la meilleure table, puis une autre seulement si elle couvre un élément que les tables retenues ne couvrent pas (`SEARCH_MIN_COVERAGE_GAIN`).
-  5. **Colonnes gardées.** Pour chaque élément, seule la colonne qui lui correspond le mieux est gardée, plus les colonnes essentielles.
-
-Le mode se choisit dans le `.env`, ou à chaque appel de diagnostic avec `"search_mode": "coverage"`. Le debug montre, pour chaque table, l'élément → la colonne trouvée, sa force, sa rareté et l'apport (`gain`).
-
-Contrôle sur la vraie base (sans coût) : `python benchmark/schema_search_eval.py` vérifie les tables attendues pour les questions de [`benchmark/schema_questions.yaml`](benchmark/schema_questions.yaml). Il compare les deux modes (`--mode both`, par défaut) : rappel, précision (tables utiles / tables envoyées), tables par question, tokens et temps.
+Contrôle sur la vraie base (sans coût) : `python benchmark/schema_search_eval.py` vérifie les tables attendues pour les questions de [`benchmark/schema_questions.yaml`](benchmark/schema_questions.yaml). Il affiche le rappel, la précision (tables utiles / tables envoyées), les tables par question, les tokens, le temps et le rang des tables attendues par vecteur seul. Historique des mesures : [`benchmark/HISTORY.md`](benchmark/HISTORY.md).
 
 Une collection Postman est fournie : [`tools/postman/AskYourData.postman_collection.json`](tools/postman/AskYourData.postman_collection.json).
 

@@ -12,6 +12,7 @@ Endpoints :
   POST /annotate/table          — annoter une table (prioritaire sur l'automatique)
   POST /annotate/column         — annoter une colonne (prioritaire sur l'automatique)
   POST /reindex                 — recalcule les embeddings d'une table et de ses colonnes
+  GET  /accounts                — comptes (bases sources) connus
   GET  /modules                 — modules Odoo de l'index
   GET  /export                  — fichier d'enrichissement d'un module (JSON)
   POST /import                  — applique un fichier d'enrichissement, réencode les tables modifiées
@@ -33,7 +34,7 @@ from .embedder import Embedder, EmbedderConfig
 from .enrichment import export_schema, import_enrichment, list_modules
 from .filters import load_filter_config
 from .indexer import index_account, index_report, reindex_table_embeddings
-from .search_data import load_element_sims, load_search_data, vector_ranking
+from .search_data import load_search_data, vector_ranking
 from .vector_space import ensure_vector_space, missing_embeddings
 
 # ── Logging ────────────────────────────────────────────────────────────────
@@ -119,25 +120,12 @@ def get_source_conn(account: dict):
     )
 
 
-def search_mode(requested: str = None) -> str:
-    mode = (requested or os.getenv("SEARCH_MODE", "legacy")).strip().lower()
-    if mode not in ("legacy", "coverage"):
-        raise ValueError(f"search_mode inconnu : {mode} (legacy | coverage)")
-    return mode
-
-
 def plan_params() -> search.PlanParams:
     return search.PlanParams(
         seed_tables=int(os.getenv("SEARCH_SEED_TABLES", "5")),
         max_tables=int(os.getenv("SEARCH_MAX_TABLES", "10")),
         max_columns=int(os.getenv("SEARCH_MAX_COLUMNS", "15")),
         token_budget=int(os.getenv("SCHEMA_TOKEN_BUDGET", "3000")),
-        candidate_tables=int(os.getenv("SEARCH_CANDIDATE_TABLES", "10")),
-        element_context=int(os.getenv("SEARCH_ELEMENT_CONTEXT", "2")),
-        coverage_weight=float(os.getenv("SEARCH_COVERAGE_WEIGHT", "0.6")),
-        min_element_strength=float(os.getenv("SEARCH_MIN_ELEMENT_STRENGTH", "0.3")),
-        cover_ratio=float(os.getenv("SEARCH_COVER_RATIO", "0.8")),
-        min_coverage_gain=float(os.getenv("SEARCH_MIN_COVERAGE_GAIN", "0.15")),
     )
 
 
@@ -189,17 +177,12 @@ def select():
         return jsonify({"error": "'question' obligatoire"}), 400
     if not account_id:
         return jsonify({"error": "'account_id' obligatoire"}), 400
-    try:
-        mode = search_mode(data.get("search_mode"))
-    except ValueError as exc:
-        return jsonify({"error": str(exc)}), 400
 
     try:
         t0       = time.time()
         params   = plan_params()
         query    = search.build_query(question, search.load_synonyms())
-        # legacy : question + synonymes dans un seul vecteur ; coverage : la question telle quelle
-        q_vector = embedder.embed_query(query.expanded_text() if mode == "legacy" else question, "tables")
+        q_vector = embedder.embed_query(query.expanded_text(), "tables")   # question + synonymes
 
         conn = get_conn()
         try:
@@ -207,30 +190,16 @@ def select():
                 load_search_data(conn, account_id, q_vector)
             if not candidates:
                 return jsonify({"error": "Aucune table indexée — lancez /index d'abord"}), 404
-            coverage = None
-            if mode == "coverage":
-                names    = search.table_candidates(query, candidates, params.candidate_tables)
-                elements = search.question_elements(query)
-                # Chaque élément est encodé avec les mots qui l'entourent (« units in stock »)
-                texts    = search.element_texts(question, elements, params.element_context)
-                vectors  = embedder.embed_queries(texts, "columns")
-                coverage = search.CoverageInput(
-                    elements=elements,
-                    element_sims=load_element_sims(conn, account_id, names, vectors),
-                    candidate_tables=names,
-                    element_texts=texts,
-                )
             vec_ranking = None
             if debug:
                 # Mesure : la question telle quelle, comparée aux seuls vecteurs des tables
-                raw_vector = q_vector if mode == "coverage" else embedder.embed_query(question, "tables")
-                vec_ranking = vector_ranking(conn, account_id, raw_vector)
+                vec_ranking = vector_ranking(conn, account_id, embedder.embed_query(question, "tables"))
         finally:
             conn.close()
 
         value_matches = search.match_values(question, values)
         plan = search.plan_schema(query, candidates, tables_by_name, columns_by_table, relations, params,
-                                  value_matches, coverage)
+                                  value_matches)
         elapsed = round(time.time() - t0, 3)
         logger.info("✅ Select en %ss | %d tables | ~%d tokens",
                     elapsed, len(plan["tables"]), plan["token_estimate"])
@@ -244,17 +213,12 @@ def select():
             "schema_ddl": plan["schema_ddl"],
             "relations": plan["relations"],
             "token_estimate": plan["token_estimate"],
-            "search_mode": mode,
             "elapsed_s": elapsed,
         }
         if debug:
             response["debug"] = {
-                "mode": mode,
                 "query_terms": {t: sorted(v) for t, v in query.expansions.items()},
-                "encoded_text": query.expanded_text() if mode == "legacy" else question,
-                "elements": plan.get("elements"),
-                "element_texts": coverage.element_texts if coverage else None,
-                "candidate_tables": coverage.candidate_tables if coverage else None,
+                "encoded_text": query.expanded_text(),
                 "embedder": embedder.cfg.model_id,
                 "tables": plan["tables"],
                 "ranking": plan["ranking"],
@@ -319,6 +283,21 @@ def get_index_report():
         return jsonify(report)
     except Exception as exc:  # noqa: BLE001
         logger.exception("Erreur /index/report")
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.get("/accounts")
+def get_accounts():
+    """Comptes (bases sources) connus de l'index : id, nom, base."""
+    try:
+        conn = get_conn()
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("SELECT id, name, pg_db, pg_schema FROM nl2sql_accounts ORDER BY id")
+            accounts = [dict(r) for r in cur.fetchall()]
+        conn.close()
+        return jsonify({"accounts": accounts})
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Erreur /accounts")
         return jsonify({"error": str(exc)}), 500
 
 

@@ -3,18 +3,18 @@
 
 Pour chaque question de benchmark/schema_questions.yaml : appelle /api/v1/schema/debug,
 vérifie que les tables attendues sont bien envoyées au modèle SQL (rappel), compte les tables
-en trop (précision) et affiche la taille du schéma. Compare les modes de recherche.
+en trop (précision) et affiche la taille du schéma.
 Mesure aussi le rang des tables attendues dans le classement par vecteur seul (question brute
 contre fiches de tables, sans mots ni règles) : c'est l'effet direct de l'enrichissement.
 
 Usage :
   python benchmark/schema_search_eval.py [--url http://localhost:5000] [--account 1]
-                                         [--mode legacy|coverage|both] [--verbose]
+                                         [--file questions.yaml] [--verbose]
 Dépendances : requests, pyyaml.
 
 Précision = tables attendues trouvées / tables envoyées. Les tables de jointure qui relient
 deux tables attendues (ex. res_users → res_partner) comptent comme « en trop » : la mesure
-est volontairement stricte, à comparer entre modes plutôt qu'à viser 100 %.
+est volontairement stricte, à comparer entre versions plutôt qu'à viser 100 %.
 """
 
 import argparse
@@ -55,8 +55,7 @@ def vector_ranks(expected: list, ranking: list) -> list:
     return ranks
 
 
-def run(mode: str, cases: list, args) -> dict:
-    print(f"\n══ Mode {mode} ══")
+def run(cases: list, args) -> dict:
     total_req = total_ok = full_hits = 0
     sent = useful_total = 0
     tokens, times = [], []
@@ -64,14 +63,13 @@ def run(mode: str, cases: list, args) -> dict:
     all_ranks = []
     for case in cases:
         body = {"question": case["question"], "account_id": args.account}
-        if mode != "default":
-            body["search_mode"] = mode
         resp = requests.post(f"{args.url}/api/v1/schema/debug", json=body, timeout=60)
         if resp.status_code != 200:
             print(f"✗ {case['question']}\n    erreur {resp.status_code} : {resp.text[:200]}")
             continue
         data = resp.json()
-        embedder = embedder or data.get("debug", {}).get("embedder")
+        dbg = data.get("debug", {})
+        embedder = embedder or dbg.get("embedder")
         selected = {t["table_name"] for t in data["tables"]}
         missing = [r for r in case["expected"] if not satisfied(r, selected)]
         useful = useful_tables(case["expected"], selected)
@@ -84,8 +82,7 @@ def run(mode: str, cases: list, args) -> dict:
         useful_total += len(useful)
         tokens.append(data.get("token_estimate") or 0)
         times.append(data.get("elapsed_s") or 0)
-
-        ranks = vector_ranks(case["expected"], data.get("debug", {}).get("vector_ranking"))
+        ranks = vector_ranks(case["expected"], dbg.get("vector_ranking"))
         all_ranks += [r for _, r in ranks]
 
         mark = "✓" if not missing else "✗"
@@ -98,20 +95,12 @@ def run(mode: str, cases: list, args) -> dict:
             print(f"    en trop    : {extra}")
         print("    vecteur seul : " + ", ".join(f"{t} #{r}" if r else f"{t} >20" for t, r in ranks))
         if args.verbose:
-            dbg = data.get("debug", {})
-            print("    classement : " + ", ".join(
-                f"{r['table_name']}={r['score']}" + (f" (gain {r['gain']})" if r.get("gain") is not None else "")
-                for r in dbg.get("ranking", [])[:8]))
-            for t in dbg.get("tables", []):
-                if t.get("elements"):
-                    els = ", ".join(f"{e}→{m['column']}{'' if m['covered'] else ' (non couvert)'}"
-                                    for e, m in t["elements"].items())
-                    print(f"    {t['table_name']} : {els}")
+            print("    classement : " + ", ".join(f"{r['table_name']}={r['score']}"
+                                                 for r in dbg.get("ranking", [])[:8]))
 
     if not tokens:
         return {}
     summary = {
-        "mode": mode,
         "embedder": embedder or "?",
         "full": f"{full_hits}/{len(cases)}",
         "recall": 100 * total_ok / max(total_req, 1),
@@ -123,7 +112,7 @@ def run(mode: str, cases: list, args) -> dict:
         "top10": sum(1 for r in all_ranks if r and r <= 10),
         "expected": len(all_ranks),
     }
-    print(f"── Résumé ({summary['embedder']}) ──")
+    print(f"\n── Résumé ({summary['embedder']}) ──")
     print(f"Questions entièrement couvertes : {summary['full']}")
     print(f"Rappel des tables attendues     : {total_ok}/{total_req} ({summary['recall']:.0f} %)")
     print(f"Précision (tables utiles)       : {useful_total}/{sent} ({summary['precision']:.0f} %)")
@@ -140,9 +129,7 @@ def main() -> int:
     parser.add_argument("--url", default="http://localhost:5000")
     parser.add_argument("--account", type=int, default=1)
     parser.add_argument("--file", default=os.path.join(HERE, "schema_questions.yaml"))
-    parser.add_argument("--mode", default="both", choices=["legacy", "coverage", "both", "default"],
-                        help="mode de recherche ; « default » : celui du service (SEARCH_MODE)")
-    parser.add_argument("--verbose", action="store_true", help="affiche aussi le classement et les éléments")
+    parser.add_argument("--verbose", action="store_true", help="affiche aussi le classement")
     args = parser.parse_args()
 
     with open(args.file, encoding="utf-8") as fh:
@@ -150,21 +137,7 @@ def main() -> int:
     if not cases:
         print(f"Aucune question dans {args.file}")
         return 1
-
-    modes = ["legacy", "coverage"] if args.mode == "both" else [args.mode]
-    summaries = [s for s in (run(m, cases, args) for m in modes) if s]
-    if not summaries:
-        return 1
-    if len(summaries) > 1:
-        print("\n══ Comparaison ══")
-        print(f"embedder : {summaries[0]['embedder']}")
-        print(f"{'mode':<10}{'complètes':>11}{'rappel':>9}{'précision':>11}{'tables':>8}{'tokens':>8}{'ms':>7}")
-        for s in summaries:
-            print(f"{s['mode']:<10}{s['full']:>11}{s['recall']:>8.0f}%{s['precision']:>10.0f}%"
-                  f"{s['tables']:>8.1f}{s['tokens']:>8}{s['ms']:>7.0f}")
-        s = summaries[0]
-        print(f"vecteur seul (question brute) : top 5 {s['top5']}/{s['expected']}, top 10 {s['top10']}/{s['expected']}")
-    return 0
+    return 0 if run(cases, args) else 1
 
 
 if __name__ == "__main__":
