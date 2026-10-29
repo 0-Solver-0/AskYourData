@@ -323,6 +323,28 @@
         },
         "url": "{{base_url}}/api/v1/schema/import?account_id={{account_id}}"
       }
+    },
+    {
+      "name": "15. Recherche structurée — unpaid invoices by salesperson",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"account_id\": {{account_id}},\n  \"question\": \"Customers with the highest unpaid invoice amount, by salesperson\",\n  \"structured\": {\n    \"subject\": \"customer invoices\",\n    \"measures\": [\n      \"amount still due on the invoice\"\n    ],\n    \"filters\": [\n      \"customer invoices only\",\n      \"posted invoices\",\n      \"invoice not fully paid\"\n    ],\n    \"group_by\": [\n      \"customer\",\n      \"salesperson\"\n    ],\n    \"order\": \"unpaid amount desc\"\n  }\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": "{{base_url}}/api/v1/schema/structured"
+      }
     }
   ]
 }

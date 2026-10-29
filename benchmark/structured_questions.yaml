@@ -1,0 +1,118 @@
+# ══════════════════════════════════════════════════════════════════════════════
+#  Questions découpées à la main (nouvelle forme), pour tester la recherche structurée
+#  avant de confier le découpage au rôle PREP (Muse Spark).
+#
+#  Lancer : python benchmark/schema_search_eval.py --file benchmark/structured_questions.yaml --verbose
+#  Une seule question : POST /api/v1/schema/structured avec le bloc « structured ».
+#
+#  structured :
+#    subject  : ce que l'on cherche (les enregistrements) → fiches de TABLES
+#    measures : ce que l'on calcule (montant, nombre…)    → fiches de COLONNES
+#    filters  : conditions (statut, type, valeur citée)   → fiches de COLONNES
+#    group_by : axes de regroupement (client, commercial) → fiches de COLONNES
+#    period   : la date et la période concernées          → fiches de COLONNES
+#    order    : tri (non cherché : il porte sur la mesure)
+#  expected : tables qui DOIVENT être envoyées (une liste = au moins une des alternatives)
+# ══════════════════════════════════════════════════════════════════════════════
+
+- question: "Top 5 customers by revenue"
+  structured:
+    subject: "confirmed sales orders"
+    measures: ["total amount of the sales order"]
+    filters: ["confirmed sales orders only"]
+    group_by: ["customer"]
+    order: "revenue desc, top 5"
+  expected: [[sale_order, account_move], res_partner]
+
+- question: "Customers with the highest unpaid invoice amount, by salesperson"
+  structured:
+    subject: "customer invoices"
+    measures: ["amount still due on the invoice"]
+    filters: ["customer invoices only", "posted invoices", "invoice not fully paid"]
+    group_by: ["customer", "salesperson"]
+    order: "unpaid amount desc"
+  expected: [account_move, res_partner, res_users]
+
+- question: "Monthly invoiced revenue in 2025"
+  structured:
+    subject: "customer invoices"
+    measures: ["invoiced amount without tax"]
+    filters: ["customer invoices only", "posted invoices"]
+    group_by: ["month of the invoice date"]
+    period: "invoice date in 2025"
+  expected: [account_move]
+
+- question: "Expected revenue in the CRM pipeline by stage"
+  structured:
+    subject: "CRM opportunities"
+    measures: ["expected revenue of the opportunity"]
+    filters: ["open opportunities"]
+    group_by: ["pipeline stage"]
+  expected: [crm_lead, crm_stage]
+
+- question: "Opportunities won this quarter by salesperson"
+  structured:
+    subject: "CRM opportunities"
+    measures: ["number of opportunities"]
+    filters: ["won opportunities"]
+    group_by: ["salesperson"]
+    period: "date the opportunity was closed, this quarter"
+  expected: [crm_lead, res_users]
+
+- question: "Top lost reasons this year"
+  structured:
+    subject: "lost CRM opportunities"
+    measures: ["number of lost opportunities"]
+    filters: ["lost opportunities"]
+    group_by: ["reason the opportunity was lost"]
+    period: "date the opportunity was closed, this year"
+    order: "count desc"
+  expected: [crm_lead, crm_lost_reason]
+
+- question: "Products with less than 10 units in stock"
+  structured:
+    subject: "stock quantities on hand per product and location"
+    measures: ["quantity on hand"]
+    filters: ["quantity on hand less than 10", "internal stock locations"]
+    group_by: ["product"]
+  expected: [stock_quant, [product_product, product_template]]
+
+- question: "Deliveries pending this week"
+  structured:
+    subject: "outgoing deliveries to customers (stock transfers)"
+    filters: ["delivery orders only", "not done and not cancelled"]
+    period: "scheduled date of the delivery, this week"
+  expected: [stock_picking]
+
+- question: "Top suppliers by purchase amount"
+  structured:
+    subject: "purchase orders"
+    measures: ["total amount of the purchase order"]
+    filters: ["confirmed purchase orders"]
+    group_by: ["vendor"]
+    order: "amount desc"
+  expected: [purchase_order, res_partner]
+
+- question: "Headcount per department"
+  structured:
+    subject: "employees"
+    measures: ["number of employees"]
+    filters: ["active employees"]
+    group_by: ["department of the employee"]
+  expected: [hr_employee, hr_department]
+
+- question: "Best selling products by quantity"
+  structured:
+    subject: "sales order lines"
+    measures: ["quantity sold"]
+    filters: ["confirmed sales orders only"]
+    group_by: ["product"]
+    order: "quantity desc"
+  expected: [sale_order_line, [product_product, product_template]]
+
+- question: "How many customers do we have in Morocco?"
+  structured:
+    subject: "customers (contacts)"
+    measures: ["number of customers"]
+    filters: ["customers only", "country is Morocco"]
+  expected: [res_partner, res_country]

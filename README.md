@@ -145,6 +145,33 @@ Sans GPU, tout fonctionne sur CPU : le GPU accélère l'indexation et la recherc
 - Les libellés Odoo (nom des modèles et des champs, aide, valeurs possibles des champs à choix) sont récupérés automatiquement.
 - Une réindexation n'écrase jamais les annotations manuelles ni les descriptions.
 
+## Recherche à partir d'une question découpée (nouvelle forme, en test)
+
+La question est découpée en **morceaux de sens**. Le sujet est cherché parmi les fiches de tables, et chaque autre morceau parmi les colonnes des tables trouvées. Le découpage se fait **à la main** pour l'instant ; le rôle PREP (Muse Spark) le produira ensuite.
+
+```bash
+curl -X POST http://localhost:5000/api/v1/schema/structured -H "Content-Type: application/json" -d '{
+  "account_id": 1,
+  "question": "Customers with the highest unpaid invoice amount, by salesperson",
+  "structured": {
+    "subject":  "customer invoices",
+    "measures": ["amount still due on the invoice"],
+    "filters":  ["customer invoices only", "posted invoices", "invoice not fully paid"],
+    "group_by": ["customer", "salesperson"],
+    "order":    "unpaid amount desc"
+  }
+}'
+```
+
+- **Sujet** : il classe les tables (consigne « tables » de l'embedder). Les 6 premières sont les candidates (`STRUCTURED_CANDIDATE_TABLES`).
+- **Mesures, filtres, regroupements, période** : chacun est cherché parmi les colonnes des candidates (consigne « columns »). On garde la meilleure colonne de chaque morceau, plus une seconde si elle est presque aussi bonne (`STRUCTURED_MATCHES_PER_PIECE`).
+- **Tables gardées** : la première du sujet, celles qui portent une colonne retenue, et les tables visées par les clés étrangères retenues pour obtenir les noms. Une table sans colonne de nom suit sa clé obligatoire : `res_users → partner_id → res_partner`.
+- **Schéma minimal** : clé primaire, colonnes retenues, clés de jointure et colonne de nom, avec les notes de l'enrichissement.
+- **Réponse** : le schéma, plus le diagnostic (classement du sujet et colonnes trouvées pour chaque morceau).
+- **Les 12 questions découpées à la main** : [`benchmark/structured_questions.yaml`](benchmark/structured_questions.yaml), à lancer avec `python benchmark/schema_search_eval.py --file benchmark/structured_questions.yaml --verbose`.
+
+Les fiches ont été réécrites dans la même forme. Une table enrichie est décrite par son libellé, sa description et ses synonymes, sans liste de colonnes. Une colonne est décrite par son sens d'abord (libellé, synonymes, notes, aide, valeurs), et son nom technique en dernier. **Il faut réindexer une fois** après la mise à jour.
+
 ## Enrichissement par module (export / import)
 
 Le texte d'une table, encodé en vecteur, ne contient au départ que son nom, son libellé Odoo et quelques colonnes. L'enrichissement y ajoute une description et du vocabulaire métier, à la main ou plus tard par le rôle PREP, dans le même format.

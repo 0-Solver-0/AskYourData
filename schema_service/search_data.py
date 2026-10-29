@@ -24,7 +24,7 @@ def load_search_data(conn, account_id: int, q_vector: list[float]):
         tables = [dict(r) for r in cur.fetchall()]
         cur.execute("""
             SELECT t.table_name, c.column_name, c.data_type, c.is_pk, c.is_fk, c.is_nullable,
-                   c.label, c.synonyms, c.display, c.odoo_label, c.odoo_type, c.selection_values,
+                   c.label, c.synonyms, c.notes, c.display, c.odoo_label, c.odoo_type, c.selection_values,
                    CASE WHEN c.embedding IS NULL THEN 0 ELSE 1 - (c.embedding <=> %s::vector) END AS similarity
             FROM nl2sql_columns c JOIN nl2sql_tables t ON t.id = c.table_id
             WHERE t.account_id = %s
@@ -75,3 +75,31 @@ def vector_ranking(conn, account_id: int, q_vector: list[float], limit: int = 20
             LIMIT %s
         """, (q_vector, account_id, q_vector, limit))
         return [{"table_name": t, "similarity": round(float(s), 3)} for t, s in cur.fetchall()]
+
+
+def column_similarities(conn, account_id: int, table_names: list[str],
+                        vectors: list[list[float]]) -> dict[tuple[str, str], list[float]]:
+    """
+    Similarité de chaque vecteur (un par morceau de question) avec chaque colonne des tables
+    données, en une requête : {(table, colonne): [similarité morceau 0, 1…]}.
+    """
+    if not table_names or not vectors:
+        return {}
+    values_sql = ", ".join(["(%s, %s::vector)"] * len(vectors))
+    params: list = []
+    for i, vec in enumerate(vectors):
+        params += [i, vec]
+    params += [account_id, table_names]
+    out: dict[tuple[str, str], list[float]] = {}
+    with conn.cursor() as cur:
+        cur.execute(f"""
+            SELECT t.table_name, c.column_name, e.i, 1 - (c.embedding <=> e.v)
+            FROM nl2sql_columns c
+            JOIN nl2sql_tables t ON t.id = c.table_id
+            CROSS JOIN (VALUES {values_sql}) AS e(i, v)
+            WHERE t.account_id = %s AND t.table_name = ANY(%s) AND c.embedding IS NOT NULL
+        """, params)
+        for table, column, i, sim in cur.fetchall():
+            sims = out.setdefault((table, column), [0.0] * len(vectors))
+            sims[i] = float(sim)
+    return out

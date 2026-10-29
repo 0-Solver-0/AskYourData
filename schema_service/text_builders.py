@@ -59,50 +59,62 @@ def column_display_label(col: dict) -> str:
 
 
 def build_column_text(col: dict) -> str:
-    """Texte d'une colonne : nom, libellés, synonymes, notes (enrichissement), aide courte, valeurs possibles."""
-    parts = [col["column_name"], humanize(col["column_name"])]
+    """
+    Fiche d'une colonne, rédigée comme un morceau de question (mesure, filtre, regroupement) :
+    le sens d'abord (libellé, synonymes, notes, aide, valeurs possibles), le nom technique à la fin.
+    """
+    parts: list[str] = []
     for key in ("label", "odoo_label", "synonyms"):
         text = _clean(col.get(key))
         if text and text not in parts:
             parts.append(text)
-    notes = _clean(col.get("notes"))
-    if notes:
-        parts.append(notes[:MAX_HELP_CHARS])
-    help_text = _clean(col.get("odoo_help"))
-    if help_text:
-        parts.append(help_text[:MAX_HELP_CHARS])
+    for key in ("notes", "odoo_help"):
+        text = _clean(col.get(key))
+        if text:
+            parts.append(text[:MAX_HELP_CHARS])
     if col.get("selection_values"):
         parts.append(f"values: {col['selection_values']}")
+    parts.append(f"column {col['column_name']}")
     return " | ".join(parts)
+
+
+# Colonnes qui décrivent le mieux une table non enrichie, par type Odoo (du plus au moins parlant)
+BUSINESS_TYPE_ORDER = {"selection": 0, "monetary": 1, "many2one": 2, "date": 3, "datetime": 3,
+                       "float": 4, "integer": 5, "char": 6, "text": 7, "boolean": 8}
 
 
 def build_table_text(table: dict, columns: list[dict], relation_labels: Iterable[str] = ()) -> str:
     """
-    Texte d'une table, court et distinctif, du plus informatif au moins informatif :
-    nom, modèle Odoo, libellés, synonymes, domaine, description, puis au plus
-    MAX_TABLE_TEXT_COLUMNS colonnes métier (sans les libellés communs à toutes les tables).
+    Fiche d'une table, rédigée comme le « sujet » d'une question : ce que la table contient.
+    Libellé métier, description, synonymes, libellé Odoo, nom lisible, domaine.
+    Table enrichie (description présente) : rien de plus, les colonnes ont leurs propres vecteurs.
+    Table non enrichie : on ajoute ses colonnes métier les plus parlantes (champs à choix,
+    montants, liens, dates…), au plus MAX_TABLE_TEXT_COLUMNS, jamais les colonnes techniques.
     """
-    parts: list[str] = [table["table_name"], humanize(table["table_name"])]
-    for key in ("odoo_model", "label", "odoo_label", "synonyms", "domain", "description"):
+    parts: list[str] = []
+    for key in ("label", "description", "synonyms", "odoo_label"):
         text = _clean(table.get(key))
         if text and text not in parts:
             parts.append(text)
+    parts.append(humanize(table["table_name"]))
+    if _clean(table.get("domain")):
+        parts.append(f"domain: {_clean(table['domain'])}")
 
-    col_labels = []
-    for col in columns:
-        if col["column_name"] in TECHNICAL_COLUMNS:
-            continue
-        label = column_display_label(col)
-        if label.lower() in GENERIC_COLUMN_LABELS or label in col_labels:
-            continue
-        col_labels.append(label)
-        if len(col_labels) >= MAX_TABLE_TEXT_COLUMNS:
-            break
-    if col_labels:
-        parts.append("columns: " + ", ".join(col_labels))
+    if not _clean(table.get("description")):
+        business = [c for c in columns if c["column_name"] not in TECHNICAL_COLUMNS]
+        business.sort(key=lambda c: BUSINESS_TYPE_ORDER.get(c.get("odoo_type") or "", 9))
+        col_labels: list[str] = []
+        for col in business:
+            label = column_display_label(col)
+            if label.lower() in GENERIC_COLUMN_LABELS or label in col_labels:
+                continue
+            col_labels.append(label)
+            if len(col_labels) >= MAX_TABLE_TEXT_COLUMNS:
+                break
+        if col_labels:
+            parts.append("contains: " + ", ".join(col_labels))
 
     rel = [_clean(x) for x in relation_labels if _clean(x)]
     if rel:
         parts.append("relations: " + ", ".join(rel))
-
     return " | ".join(parts)
