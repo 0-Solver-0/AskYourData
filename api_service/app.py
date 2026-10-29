@@ -5,10 +5,10 @@ Orchestrateur du pipeline AskYourData (architecture v3, voir documentation/ARCHI
 
 Pipeline actuel :
   1. schema_service   — identifie tables, colonnes, relations
-  2. génération SQL   — pas encore branchée (rôle LLM `SQL`, incréments 6-7)
+  2. génération SQL   — rôle LLM `sql` (prompts/sql_generate.md), sans exécution pour l'instant
 
 Endpoints :
-  POST /api/v1/translate   — question → schéma réduit (sql = null tant que la génération n'est pas branchée)
+  POST /api/v1/translate   — question → découpage → schéma → SQL (sans exécution)
   POST /api/v1/schema/debug — diagnostic de la recherche de schéma
   POST /api/v1/schema/structured — recherche à partir d'une question découpée (sujet, mesures…)
   GET  /api/v1/health      — healthcheck des services
@@ -31,6 +31,7 @@ import os
 import requests
 from flask import Flask, jsonify, request
 
+from api_service import pipeline
 from api_service.llm import ROLES, LLMClient, LLMError
 from api_service.prep import structure_question
 
@@ -77,13 +78,11 @@ def llm_status() -> dict:
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
 
-def call_schema(question: str, account_id: int, debug: bool = False) -> dict:
-    resp = requests.post(
-        f"{SCHEMA_SERVICE_URL}/select",
-        json={"question": question, "account_id": account_id, "debug": debug},
-        timeout=30,
-    )
-    resp.raise_for_status()
+def call_structured_schema(account_id: int, question: str, structured: dict) -> dict:
+    """Recherche structurée (schema_service), diagnostic compris (morceaux « non trouvés »)."""
+    resp = requests.post(f"{SCHEMA_SERVICE_URL}/select/structured", timeout=60,
+                         json={"account_id": account_id, "question": question, "structured": structured,
+                               "debug": True})
     return resp.json()
 
 
@@ -345,75 +344,35 @@ def structure():
 @app.post("/api/v1/translate")
 def translate():
     """
-    Question → schéma réduit. La génération SQL n'est pas encore branchée :
-    `sql` vaut null et `status` vaut "generation_not_configured".
+    Question → SQL, sans exécution : découpage (PREP) → recherche structurée → génération (SQL).
 
     Body : {
-      "question":   "What is the average order value per customer?",
-      "account_id": 1
+      "question":   "Top 5 customers by revenue this year",
+      "account_id": 1,
+      "structured": {...}                       (facultatif : découpage fourni, PREP sauté)
+      "reasoning":  {"prep": "low", "sql": "medium"}   (facultatif)
     }
 
-    Retourne : {
-      "question_original":  "...",
-      "question_rewritten": "...",   (identique à la question : plus de traduction)
-      "tables_selected":    [...],
-      "columns_display":    [...],
-      "schema_ddl":         "CREATE TABLE ...",
-      "sql":                null,
-      "status":             "generation_not_configured",
-      "elapsed_s":          0.1
-    }
+    Retourne : {status: sql | missing | cannot_answer | refused | clarification_needed | error,
+                sql, missing, reason, structured_request, prep_status, tables_used, schema_ddl,
+                not_found, models, usage, cost_usd, timings_ms}
     """
-    import time
-    t0   = time.time()
     data = request.get_json(silent=True) or {}
-
-    question   = data.get("question", "").strip()
+    question = (data.get("question") or "").strip()
     account_id = data.get("account_id")
-
     if not question:
         return jsonify({"error": "'question' obligatoire"}), 400
     if not account_id:
         return jsonify({"error": "'account_id' obligatoire"}), 400
-
-    logger.info("Pipeline démarré — question: %s", question[:80])
-
-    # Plus de traduction : les questions sont posées en anglais (décision D1).
-    question_rewritten = question
-
-    # ── Étape 1 : schema ───────────────────────────────────────────────────
     try:
-        schema_result   = call_schema(question_rewritten, account_id)
-        schema_ddl      = schema_result.get("schema_ddl", "")
-        tables_selected = schema_result.get("tables", [])
-        columns_display = schema_result.get("columns_display", [])
-        logger.info("Schema OK : %d tables", len(tables_selected))
-    except requests.exceptions.ConnectionError:
-        return jsonify({"error": "Impossible de joindre le schema_service"}), 503
-    except requests.exceptions.Timeout:
-        return jsonify({"error": "Timeout schema_service"}), 504
-    except requests.exceptions.HTTPError as exc:
-        return jsonify({"error": f"Erreur schema_service : {exc}"}), 502
-
-    if not schema_ddl:
-        return jsonify({"error": "Schéma vide — lancez /api/v1/index d'abord"}), 400
-
-    # ── Étape 2 : génération SQL — à brancher (rôle LLM `SQL`) ─────────────
-
-    elapsed = round(time.time() - t0, 2)
-    logger.info("✅ Pipeline terminé en %ss", elapsed)
-
-    return jsonify({
-        "question_original":  question,
-        "question_rewritten": question_rewritten,
-        "tables_selected":    tables_selected,
-        "columns_display":    columns_display,
-        "schema_ddl":         schema_ddl,
-        "token_estimate":     schema_result.get("token_estimate"),
-        "sql":                None,
-        "status":             "generation_not_configured",
-        "elapsed_s":          elapsed,
-    })
+        client = get_llm()
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"error": f"Configuration LLM invalide : {exc}"}), 500
+    logger.info("Translate — %s", question[:80])
+    out = pipeline.translate(client, call_structured_schema, question, int(account_id),
+                             structured=data.get("structured"), reasoning=data.get("reasoning"))
+    logger.info("Translate — %s en %s ms (%s $)", out["status"], out["timings_ms"].get("total"), out["cost_usd"])
+    return jsonify(out)
 
 
 if __name__ == "__main__":

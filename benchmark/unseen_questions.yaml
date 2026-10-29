@@ -41,7 +41,8 @@
     measures: []
     filters: ["status", "receipt status"]
     group_by: ["vendor"]
-  expected: [purchase_order, res_partner]
+  # La question ne demande pas le fournisseur : seule purchase_order est attendue (corrigé le 29/10)
+  expected: [purchase_order]
 
 - question: "Stock value by product category"
   structured:
