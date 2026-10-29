@@ -439,3 +439,35 @@ def test_column_similarities_per_piece(dbs):
     assert all(len(v) == 2 for v in sims.values())
     assert sims[("sale_order", "amount_total")][1] == pytest.approx(1.0, abs=1e-5)
     assert column_similarities(nl, account["id"], [], [other]) == {}
+
+
+def test_always_include_is_imported_without_reencoding(dbs):
+    import copy
+
+    from schema_service.enrichment import export_schema, import_enrichment
+    from schema_service.search_data import load_search_data
+
+    src, nl, account = dbs
+    index_account(nl, src, account, fake_embed, load_filter_config(CONFIG_PATH))
+    data = export_schema(nl, account["id"], tables=["sale_order"])
+    state = next(c for c in data["tables"][0]["columns"] if c["column_name"] == "state")
+    assert state["enrich"]["always_include"] is False
+
+    filled = copy.deepcopy(data)
+    next(c for c in filled["tables"][0]["columns"] if c["column_name"] == "state")["enrich"]["always_include"] = True
+    report = import_enrichment(nl, account["id"], filled)
+    assert report["tables_changed"] == ["sale_order"] and report["fields_changed"] == 1
+    assert report["changed_table_ids"] == []                       # rien à réencoder
+
+    _, _, columns_by_table, _, _ = load_search_data(nl, account["id"], fake_embed(["sales orders"])[0])
+    flags = {c["column_name"]: c["always_include"] for c in columns_by_table["sale_order"]}
+    assert flags["state"] is True and flags["amount_total"] is False
+
+    # Une réindexation ne l'efface pas ; une valeur invalide est refusée
+    index_account(nl, src, account, fake_embed, load_filter_config(CONFIG_PATH))
+    again = export_schema(nl, account["id"], tables=["sale_order"])["tables"][0]
+    assert next(c for c in again["columns"] if c["column_name"] == "state")["enrich"]["always_include"] is True
+    next(c for c in filled["tables"][0]["columns"] if c["column_name"] == "state")["enrich"]["always_include"] = "maybe"
+    with pytest.raises(ValueError):
+        import_enrichment(nl, account["id"], filled, dry_run=True)
+    nl.rollback()

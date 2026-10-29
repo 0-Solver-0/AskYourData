@@ -170,6 +170,8 @@ curl -X POST http://localhost:5000/api/v1/schema/structured -H "Content-Type: ap
   - **sujet d'abord** : si la table du sujet a une colonne presque aussi bonne que la meilleure (écart ≤ `STRUCTURED_SUBJECT_MARGIN`, 0,06), les autres tables sont écartées pour ce morceau ;
   - **valeurs citées** : une valeur n'ajoute sa table que si celle-ci est reliée par une clé étrangère à une table déjà retenue ; sinon elle est écartée et signalée dans le diagnostic.
   - **non trouvé** : un morceau dont la meilleure colonne est sous `STRUCTURED_MIN_SIMILARITY` (0,6) ne garde rien et est signalé ; `create_date` est autorisée pour une période (« new customers this month ») ;
+  - **colonnes toujours envoyées** : une colonne marquée `always_include` par l'enrichissement (statut, type de document, actif…) part avec sa table, même si aucun morceau ne la demande ; l'étape SQL voit ainsi `sale_order.state` ou `account_move.move_type` et leurs notes ;
+  - **nom toujours atteint** : une table ajoutée par une jointure, un regroupement ou une valeur, sans colonne de nom, suit sa clé vers une table qui en a (`res_users → res_partner`) ;
   - **regroupement = table** : un regroupement qui ressemble à une fiche de table (`STRUCTURED_TABLE_PIECE_MIN`, 0,6) l'ajoute avec le chemin depuis le sujet, jusqu'à 4 liens (« product category » → `product_category`).
 - **Découpage par PREP** : prompt dans [`prompts/prep_structure.md`](prompts/prep_structure.md).
 - **Tables gardées** : la première du sujet, celles qui portent une colonne retenue, et les tables visées par les clés étrangères retenues pour obtenir les noms. Une table sans colonne de nom suit sa clé obligatoire : `res_users → partner_id → res_partner`.

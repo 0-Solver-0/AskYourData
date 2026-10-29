@@ -10,6 +10,7 @@ sont appliqués ; les tables modifiées sont ensuite réencodées (voir server.p
 
 Règles de l'import :
   - champ absent ou null : inchangé ; chaîne vide : effacé ; liste : jointe par des virgules
+  - always_include : true / false (une chaîne vide vaut false)
   - table ou colonne inconnue : signalée, jamais créée
   - les champs importés sont protégés : une réindexation ne les écrase pas
 """
@@ -27,14 +28,17 @@ FORMAT = "askyourdata-enrichment"
 VERSION = 1
 
 TABLE_FIELDS = ("label", "description", "synonyms", "domain")
-COLUMN_FIELDS = ("label", "synonyms", "notes")
+COLUMN_FIELDS = ("label", "synonyms", "notes", "always_include")
+# Champs qui changent le texte encodé (les autres ne demandent pas de réencoder la table)
+ENCODED_COLUMN_FIELDS = ("label", "synonyms", "notes")
 
 INSTRUCTIONS = (
     "Remplir uniquement les blocs « enrich » (en anglais, comme les questions). "
     "Table : description = ce que contient la table et à quoi elle sert (1 à 3 phrases, "
     "sans viser une question précise) ; synonyms = termes métier, séparés par des virgules ; "
     "label = nom métier court ; domain = sales, accounting, inventory, crm, hr… "
-    "Colonne : label, synonyms, notes (sens métier, unité, piège). "
+    "Colonne : label, synonyms, notes (sens métier, unité, piège) ; always_include = true pour une "
+    "colonne à toujours envoyer avec sa table (statut, type de document, actif…). "
     "null = inchangé, \"\" = effacer. Le reste du fichier est ignoré à l'import."
 )
 
@@ -75,7 +79,7 @@ def export_schema(conn, account_id: int, module: Optional[str] = None,
 
         cur.execute("""
             SELECT table_id, column_name, data_type, is_pk, is_fk, odoo_label, odoo_help, odoo_type,
-                   selection_values, label, synonyms, notes
+                   selection_values, label, synonyms, notes, always_include
             FROM nl2sql_columns WHERE table_id = ANY(%s) ORDER BY table_id, id
         """, (ids,))
         cols_by_table: dict[int, list[dict]] = {}
@@ -142,6 +146,20 @@ def _normalize(value: Any) -> tuple[bool, Optional[str]]:
     return True, (value or None)
 
 
+def _normalize_bool(value: Any) -> tuple[bool, Optional[bool]]:
+    """(à appliquer ?, valeur) pour always_include : None → inchangé ; "" → false."""
+    if value is None:
+        return False, None
+    if isinstance(value, bool):
+        return True, value
+    text = str(value).strip().lower()
+    if text in ("", "false", "no", "0"):
+        return True, False
+    if text in ("true", "yes", "1"):
+        return True, True
+    raise ValueError(f"always_include doit valoir true ou false (reçu : {value!r})")
+
+
 def import_enrichment(conn, account_id: int, payload: dict, dry_run: bool = False,
                       source: str = "manual") -> dict:
     """
@@ -155,7 +173,8 @@ def import_enrichment(conn, account_id: int, payload: dict, dry_run: bool = Fals
         raise ValueError("Fichier non reconnu : « tables » doit être une liste")
 
     changes, unknown_tables, unknown_columns, ignored = [], [], [], set()
-    changed_tables: dict[int, str] = {}
+    changed_tables: dict[int, str] = {}   # texte encodé modifié : à réencoder
+    flagged_tables: dict[int, str] = {}   # seul always_include a changé
 
     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         for entry in entries:
@@ -203,7 +222,10 @@ def import_enrichment(conn, account_id: int, payload: dict, dry_run: bool = Fals
                 ignored |= {f"column.{k}" for k in cenrich if k not in COLUMN_FIELDS}
                 cupdates = {}
                 for field in COLUMN_FIELDS:
-                    apply, value = _normalize(cenrich.get(field))
+                    normalize = _normalize_bool if field == "always_include" else _normalize
+                    apply, value = normalize(cenrich.get(field))
+                    if field == "always_include" and value is not None and current[cname][field] is None:
+                        current[cname][field] = False
                     if apply and value != current[cname][field]:
                         cupdates[field] = value
                         changes.append({"table": name, "column": cname, "field": field,
@@ -212,8 +234,10 @@ def import_enrichment(conn, account_id: int, payload: dict, dry_run: bool = Fals
                     sets = ", ".join(f"{k} = %s" for k in cupdates)
                     cur.execute(f"UPDATE nl2sql_columns SET {sets}, manual_override = TRUE WHERE id = %s",
                                 [*cupdates.values(), current[cname]["id"]])
-                if cupdates:
+                if any(k in ENCODED_COLUMN_FIELDS for k in cupdates):
                     changed_tables[table_id] = name
+                elif cupdates:
+                    flagged_tables[table_id] = name
 
     if dry_run:
         conn.rollback()
@@ -223,7 +247,7 @@ def import_enrichment(conn, account_id: int, payload: dict, dry_run: bool = Fals
     return {
         "dry_run": dry_run,
         "tables_in_file": len(entries),
-        "tables_changed": sorted(changed_tables.values()),
+        "tables_changed": sorted(set(changed_tables.values()) | set(flagged_tables.values())),
         "fields_changed": len(changes),
         "changes": changes,
         "unknown_tables": unknown_tables,
