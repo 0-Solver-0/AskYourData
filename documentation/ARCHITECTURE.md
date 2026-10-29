@@ -1,7 +1,7 @@
 # AskYourData — Architecture v3 (Meta API)
 
-> **Statut :** décisions prises le 27 oct 2026. Ce document décrit l'architecture cible ; aucun code n'est encore modifié.
-> Il remplace les sections « Architecture » de `documentation/PROJECT_BRIEF.md` et du `README.md`, qui seront alignées dans une PR séparée.
+> **Statut :** décisions prises le 27 oct 2026, complétées le 29 oct (D8 à D12). Indexation, recherche de schéma, enrichissement et embedder sont codés ; la structuration de la question, la génération SQL et l'exécution restent à faire.
+> Le brief d'origine est archivé dans `documentation/archive/PROJECT_BRIEF.md`.
 > Conventions : `[À VÉRIFIER]` = hypothèse à confirmer ; `[ESTIMATION]` = ordre de grandeur à mesurer.
 
 ---
@@ -17,6 +17,11 @@
 | D5 | **Tout ce qui peut être fait en code est fait en code**, avant tout appel d'API. | Cache, filtrage, recherche vectorielle, jointures, validation et formatage restent locaux. |
 | D6 | **Fournisseurs interchangeables par rôle.** Chaque rôle choisit un profil de fournisseur par configuration, avec un profil de secours (§ 7). | Bascule vers un autre hébergeur ou un serveur local en changeant une ligne de configuration, sans toucher au code. |
 | D7 | **Embedder local conservé** (CPU, petit modèle). | Recherche de schéma gratuite et rapide, sans dépendance réseau. |
+| D8 | **Embedder paramétrable** (`EMBEDDER_MODEL`, `EMBEDDER_DEVICE`, `EMBEDDER_DIM`) : MiniLM par défaut, Qwen3-Embedding-0.6B en option, GPU NVIDIA facultatif (`docker-compose.gpu.yml`). | Changer de modèle vide les vecteurs et demande une réindexation ; le reste de l'index est conservé. |
+| D9 | **Enrichissement par module Odoo**, en export / import JSON (`/api/v1/schema/export`, `/import`), rempli à la main, par Muse Code ou par `PREP`. | Testé sur `account` : la table des factures passe de la 13e à la 2e place en recherche par vecteur seul. C'est l'enrichissement des fiches, pas le choix de l'embedder, qui fait progresser la recherche. |
+| D10 | **Abandon de la sélection par couverture mot par mot** (« mode coverage », PR #10–#11, retiré le 29/10). | Un mot isolé ne veut rien dire pour un embedder. Mesures archivées dans `benchmark/HISTORY.md`. |
+| D11 | **Nouvelle forme de recherche** : la question est découpée en morceaux de sens (sujet, mesure, filtres, regroupements, période), chacun cherché au bon endroit (tables ou colonnes), contre des fiches rédigées dans la même forme. Validée d'abord **à la main**, puis produite par `PREP` (§ 5.1). | La recherche actuelle (« legacy », règles et synonymes) reste en place comme référence jusqu'à ce que la nouvelle forme fasse mieux. |
+| D12 | **Mesures mises en pause** pendant la mise au point de la nouvelle forme. | Historique : `benchmark/HISTORY.md`. |
 
 ---
 
@@ -503,5 +508,5 @@ Chaque passage consomme des crédits : mesurer le coût réel du premier passage
 ## 14. Suites
 
 Une fois ce document validé :
-1. Aligner `documentation/PROJECT_BRIEF.md` (sections architecture, benchmark, planning) et le `README.md`.
+1. ~~Aligner `documentation/PROJECT_BRIEF.md`~~ : archivé le 29/10 (`documentation/archive/`).
 2. Découper le travail en PR à partir de `devlop`, dans l'ordre : nettoyage du repo → client LLM par rôle et profils de fournisseurs → filtrage et indexation → enrichissement → structuration de la question → validation et exécution → réduction du schéma → formatage → benchmark.

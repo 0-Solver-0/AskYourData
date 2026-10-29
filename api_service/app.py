@@ -86,24 +86,8 @@ def health():
 
 @app.get("/api/v1/schemas")
 def list_schemas():
-    """Liste les comptes disponibles depuis schema_service."""
-    try:
-        import psycopg2
-        import psycopg2.extras
-        conn = psycopg2.connect(
-            host=os.getenv("NL2SQL_DB_HOST",     "postgres_nl2sql"),
-            port=int(os.getenv("NL2SQL_DB_PORT",  "5432")),
-            dbname=os.getenv("NL2SQL_DB_NAME",    "nl2sql"),
-            user=os.getenv("NL2SQL_DB_USER",      "nl2sql"),
-            password=os.getenv("NL2SQL_DB_PASSWORD", "nl2sql"),
-        )
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute("SELECT id, name, pg_db FROM nl2sql_accounts ORDER BY id")
-            accounts = [dict(r) for r in cur.fetchall()]
-        conn.close()
-        return jsonify({"accounts": accounts})
-    except Exception as exc:
-        return jsonify({"error": str(exc)}), 500
+    """Comptes (bases sources) disponibles, depuis schema_service."""
+    return _proxy("GET", "/accounts")
 
 
 @app.post("/api/v1/index")
@@ -228,7 +212,7 @@ def schema_debug():
     """
     Diagnostic de la recherche de schéma : tables retenues et pourquoi (recherche, jointure,
     référence), détail des scores, colonnes gardées, classement, taille en tokens.
-    Body : {"question": "...", "account_id": 1, "search_mode": "legacy" | "coverage" (optionnel)}
+    Body : {"question": "...", "account_id": 1}
     """
     data = request.get_json(silent=True) or {}
     if not data.get("question") or not data.get("account_id"):
@@ -236,8 +220,7 @@ def schema_debug():
     try:
         resp = requests.post(
             f"{SCHEMA_SERVICE_URL}/select",
-            json={"question": data["question"], "account_id": data["account_id"], "debug": True,
-                  "search_mode": data.get("search_mode")},
+            json={"question": data["question"], "account_id": data["account_id"], "debug": True},
             timeout=30,
         )
         return jsonify(resp.json()), resp.status_code

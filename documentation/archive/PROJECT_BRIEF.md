@@ -1,3 +1,5 @@
+> **Archivé le 29/10/2026.** Brief d'origine (26/10/2026), antérieur à l'architecture v3 : il décrit `model_service`, `rewrite_service`, llama.cpp et un planning qui ne sont plus d'actualité. État actuel : [`../ARCHITECTURE.md`](../ARCHITECTURE.md).
+
 # AskYourData — Brief projet (Meta Global AI Developer Hackathon)
 
 > Ce document sert de contexte permanent pour le développement du projet.
