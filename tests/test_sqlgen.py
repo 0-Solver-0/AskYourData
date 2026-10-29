@@ -40,6 +40,10 @@ def test_answers_are_parsed():
     cannot = sqlgen.parse_answer("<cannot_answer>No carrier data is recorded.</cannot_answer>")
     assert cannot["status"] == "cannot_answer" and cannot["reason"] == "No carrier data is recorded."
     assert sqlgen.parse_answer("I think the answer is 42")["status"] == "error"
+    unclosed = sqlgen.parse_answer('<missing>["internal stock location", "product category"]')
+    assert unclosed["status"] == "missing" and unclosed["missing"] == ["internal stock location", "product category"]
+    assert sqlgen.parse_answer("<sql>\nSELECT 1\n")["sql"] == "SELECT 1"
+    assert sqlgen.parse_answer("<cannot_answer>No carrier data.")["reason"] == "No carrier data."
 
 
 def test_translate_end_to_end():
