@@ -83,6 +83,9 @@ def main() -> int:
             lines.append(f"- raison : {data['reason']}")
         if data.get("sql"):
             lines += ["", "```sql", data["sql"], "```"]
+        if data.get("schema_ddl"):
+            lines += ["", f"<details><summary>Schéma envoyé (~{data.get('token_estimate')} tokens)</summary>", "",
+                      "```sql", data["schema_ddl"], "```", "", "</details>"]
         lines += ["", "- [ ] SQL juste", ""]
 
     with open(out_path, "w", encoding="utf-8") as fh:
