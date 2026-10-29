@@ -5,7 +5,6 @@ identique d'un appel à l'autre : le fournisseur met le début du prompt en cach
 
 Testé le 29 oct 2026 avec `meta-models/muse-spark-open-1026` (Baseten), `temperature: 0`,
 `reasoning_effort: low` : 10 questions en un appel, ~600 tokens de réflexion.
-Résultat repris dans `benchmark/muse_questions.yaml`.
 
 ```text
 You split business questions about company data (sales, purchases, invoices, stock, CRM, HR) into search pieces.
@@ -34,6 +33,5 @@ Question: "Total spend per vendor in Germany last quarter"
 {"question": "Total spend per vendor in Germany last quarter", "subject": "purchase orders", "measures": ["total spend"], "filters": ["country"], "group_by": ["vendor"], "period": "order date", "order": null}
 ```
 
-Les deux règles « entity listed » et « time breakdown » ont été ajoutées après un premier essai ;
-`muse_questions.yaml` vient de cette version finale (~580 tokens de réflexion pour les 10 questions,
-384 tokens du prompt servis par le cache).
+Les deux règles « entity listed » et « time breakdown » ont été ajoutées après un premier essai
+(version finale : ~580 tokens de réflexion pour les 10 questions, 384 tokens du prompt servis par le cache).

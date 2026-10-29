@@ -171,7 +171,7 @@ curl -X POST http://localhost:5000/api/v1/schema/structured -H "Content-Type: ap
   - **valeurs citées** : une valeur n'ajoute sa table que si celle-ci est reliée par une clé étrangère à une table déjà retenue ; sinon elle est écartée et signalée dans le diagnostic.
   - **non trouvé** : un morceau dont la meilleure colonne est sous `STRUCTURED_MIN_SIMILARITY` (0,6) ne garde rien et est signalé ; `create_date` est autorisée pour une période (« new customers this month ») ;
   - **regroupement = table** : un regroupement qui ressemble à une fiche de table (`STRUCTURED_TABLE_PIECE_MIN`, 0,6) l'ajoute avec le chemin depuis le sujet, jusqu'à 4 liens (« product category » → `product_category`).
-- **Découpage par PREP** : prompt dans [`prompts/prep_structure.md`](prompts/prep_structure.md) ; le découpage obtenu de Muse Spark sur 10 questions nouvelles est dans [`benchmark/muse_questions.yaml`](benchmark/muse_questions.yaml).
+- **Découpage par PREP** : prompt dans [`prompts/prep_structure.md`](prompts/prep_structure.md).
 - **Tables gardées** : la première du sujet, celles qui portent une colonne retenue, et les tables visées par les clés étrangères retenues pour obtenir les noms. Une table sans colonne de nom suit sa clé obligatoire : `res_users → partner_id → res_partner`.
 - **Schéma minimal** : clé primaire, colonnes retenues, clés de jointure et colonne de nom, avec les notes de l'enrichissement.
 - **Réponse** : le schéma, plus le diagnostic (classement du sujet et colonnes trouvées pour chaque morceau).

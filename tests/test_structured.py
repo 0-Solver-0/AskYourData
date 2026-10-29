@@ -164,7 +164,7 @@ def test_hand_written_questions_are_valid():
     for case in cases:
         structured.StructuredQuestion.from_dict(case["structured"])
         assert case["expected"]
-    for name in ("unseen_questions.yaml", "muse_questions.yaml"):
+    for name in ("unseen_questions.yaml",):
         extra = yaml.safe_load(open(os.path.join(os.path.dirname(path), name), encoding="utf-8"))
         assert len(extra) == 10
         cases += extra
