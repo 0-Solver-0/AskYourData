@@ -59,12 +59,18 @@ def main() -> int:
         costs.append(data.get("cost_usd") or 0.0)
         models = data.get("models") or {}
         mark = {"sql": "✓", "missing": "?", "cannot_answer": "•"}.get(status, "✗")
-        print(f"{mark} {q}  [{status}, {total_s:.1f} s, {data.get('cost_usd', 0):.4f} $, sql={models.get('sql')}]")
+        retried = " ↻" if len(data.get("attempts") or []) > 1 else ""
+        print(f"{mark}{retried} {q}  [{status}, {total_s:.1f} s, {data.get('cost_usd', 0):.4f} $, sql={models.get('sql')}]")
         print(f"    tables : {', '.join(data.get('tables_used') or [])}")
         if data.get("not_found"):
             print(f"    non trouvé par la recherche : {data['not_found']}")
         if data.get("sql"):
             print("    " + data["sql"].replace("\n", "\n    "))
+        attempts = data.get("attempts") or []
+        if len(attempts) > 1:
+            print(f"    1er essai : manque {attempts[0].get('missing')} → recherche : " + ", ".join(
+                f"{r['text']} → {r.get('table') if r.get('found') else 'non trouvé'}"
+                for r in data.get("missing_report") or []))
         if data.get("missing"):
             print(f"    manque : {data['missing']}")
         if data.get("reason"):
@@ -77,6 +83,11 @@ def main() -> int:
                   f"- tables : {', '.join(data.get('tables_used') or [])}"]
         if data.get("not_found"):
             lines.append(f"- non trouvé par la recherche : {data['not_found']}")
+        if len(data.get("attempts") or []) > 1:
+            lines.append(f"- 1er essai : manque {data['attempts'][0].get('missing')} ; recherche : "
+                         + ", ".join(f"{r['text']} → {r.get('found') or 'non trouvé'} {r.get('table') or ''}"
+                                     f"{'.' + r['column'] if r.get('column') else ''}"
+                                     for r in data.get("missing_report") or []))
         if data.get("missing"):
             lines.append(f"- manque : {data['missing']}")
         if data.get("reason"):

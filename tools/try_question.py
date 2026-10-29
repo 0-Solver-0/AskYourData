@@ -53,14 +53,26 @@ def main() -> int:
     if data.get("not_found"):
         print(f"  non trouvé par la recherche : {data['not_found']}")
 
-    if data.get("schema_ddl"):
-        section(f"3. Schéma envoyé ({len(data.get('tables_used') or [])} tables, "
-                f"~{data.get('token_estimate')} tokens)")
-        print("  tables : " + ", ".join(data.get("tables_used") or []))
+    attempts = data.get("attempts") or []
+    for n, attempt in enumerate(attempts, start=1):
+        label = "" if len(attempts) == 1 else f" — essai {n}"
+        section(f"3. Schéma envoyé{label} ({len(attempt.get('tables') or [])} tables, "
+                f"~{attempt.get('token_estimate')} tokens)")
+        print("  tables : " + ", ".join(attempt.get("tables") or []))
         print()
-        print(data["schema_ddl"])
+        print(attempt.get("schema_ddl"))
+        section(f"   Réponse du modèle SQL{label} : {attempt.get('status')} ({attempt.get('elapsed_ms')} ms)")
+        if attempt.get("sql"):
+            print(attempt["sql"])
+        if attempt.get("missing"):
+            print("Manque : " + json.dumps(attempt["missing"], ensure_ascii=False))
+        if n == 1 and data.get("missing_report"):
+            print("\nRecherche complémentaire :")
+            for r in data["missing_report"]:
+                where = f"{r.get('table')}.{r.get('column')}" if r.get("column") else r.get("table")
+                print(f"  « {r['text']} » → {r.get('found') or 'NON TROUVÉ'} {where or ''} ({r.get('similarity')})")
 
-    section(f"4. Résultat du modèle SQL : {data.get('status')}")
+    section(f"4. Résultat final : {data.get('status')}")
     if data.get("sql"):
         print(data["sql"])
     if data.get("missing"):

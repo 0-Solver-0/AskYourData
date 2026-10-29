@@ -3,9 +3,9 @@ api_service/pipeline.py
 -----------------------
 Chaîne d'une question, pilotée par le code (voir documentation/ARCHITECTURE.md § 5).
 
-Incrément 3 : découpage (PREP) → recherche structurée → génération SQL, sans exécution.
-Les incréments suivants ajoutent la vérification et l'exécution (4), puis la relance sur
-« missing » et sur erreur (5).
+Découpage (PREP) → recherche structurée → génération SQL → si le modèle signale un manque :
+recherche complémentaire des mots manquants puis UNE nouvelle génération. Sans exécution
+(vérification et exécution : incrément suivant).
 """
 
 from __future__ import annotations
@@ -19,6 +19,8 @@ from api_service.sqlgen import generate_sql
 
 # schema_fn(account_id, question, structured) → réponse de POST /select/structured
 SchemaFn = Callable[[int, str, dict], dict]
+# extend_fn(account_id, question, structured, missing) → réponse de POST /select/extend
+ExtendFn = Callable[[int, str, dict, list], dict]
 
 REFUSALS = {"write_request": "refused", "out_of_scope": "refused", "ambiguous": "clarification_needed"}
 
@@ -31,8 +33,20 @@ def _usage(entry: Optional[dict]) -> dict:
             "cost_usd": entry.get("cost_usd", 0.0), "fallback_used": entry.get("fallback_used", False)}
 
 
+def _add_usage(total: Optional[dict], part: dict) -> dict:
+    if not total:
+        return dict(part)
+    out = dict(total)
+    for key in ("tokens_in", "tokens_cached", "tokens_out", "tokens_reasoning"):
+        out[key] = (out.get(key) or 0) + (part.get(key) or 0)
+    out["cost_usd"] = round((out.get("cost_usd") or 0) + (part.get("cost_usd") or 0), 6)
+    out["fallback_used"] = bool(out.get("fallback_used") or part.get("fallback_used"))
+    return out
+
+
 def translate(client: LLMClient, schema_fn: SchemaFn, question: str, account_id: int, *,
-              structured: Optional[dict] = None, reasoning: Optional[dict] = None) -> dict:
+              structured: Optional[dict] = None, reasoning: Optional[dict] = None,
+              extend_fn: Optional[ExtendFn] = None) -> dict:
     """
     Question → SQL (non exécuté). `structured` fourni : PREP est sauté (découpage écrit à la main).
     `reasoning` : {"prep": "low", "sql": "medium"} pour surcharger le raisonnement par rôle.
@@ -74,16 +88,57 @@ def translate(client: LLMClient, schema_fn: SchemaFn, question: str, account_id:
     out["not_found"] = [p["text"] for p in (schema.get("debug") or {}).get("pieces", []) if p.get("not_found")]
 
     # 3. Génération SQL
+    out["attempts"] = []
+    gen = _generate(client, question, out, schema, reasoning, previous=None)
+    if gen["status"] != "missing" or extend_fn is None:
+        return _finish(out, t0)
+
+    # 4. Le modèle signale un manque : recherche complémentaire, puis UNE nouvelle génération
+    asked = gen["missing"]
+    t = time.time()
+    try:
+        extended = extend_fn(account_id, question, out["structured_request"], asked)
+    except Exception as exc:  # noqa: BLE001
+        extended = {"error": str(exc)}
+    timings["extend"] = int((time.time() - t) * 1000)
+    report = extended.get("missing_report") or []
+    out["missing_report"] = report
+    found = [r for r in report if r.get("found")]
+    if extended.get("error") or not found or not extended.get("schema_ddl"):
+        out["status"] = "cannot_answer"
+        out["reason"] = (f"Data not available: {', '.join(asked)}." if not extended.get("error")
+                         else f"recherche complémentaire impossible : {extended['error']}")
+        return _finish(out, t0)
+    gen = _generate(client, question, out, extended, reasoning, previous={"missing": asked})
+    if gen["status"] == "missing":
+        out["status"] = "cannot_answer"
+        out["reason"] = f"Data not available: {', '.join(gen['missing'])}."
+    return _finish(out, t0)
+
+
+def _generate(client: LLMClient, question: str, out: dict, schema: dict, reasoning: dict,
+              previous: Optional[dict]) -> dict:
+    """Un essai de génération : met à jour `out` (statut, SQL, schéma de cet essai, usage, essais)."""
     t = time.time()
     gen = generate_sql(client, question, out["structured_request"], schema["schema_ddl"],
-                       reasoning=reasoning.get("sql"))
-    timings["generation"] = int((time.time() - t) * 1000)
-    out["usage"]["sql"] = _usage(gen.get("llm"))
-    out["models"]["sql"] = out["usage"]["sql"]["model"]
+                       previous=previous, reasoning=reasoning.get("sql"))
+    elapsed = int((time.time() - t) * 1000)
+    key = "generation" if not out["attempts"] else f"generation_{len(out['attempts']) + 1}"
+    out["timings_ms"][key] = elapsed
+    usage = _usage(gen.get("llm"))
+    out["usage"]["sql"] = _add_usage(out["usage"].get("sql"), usage)
+    out["models"]["sql"] = usage["model"] or out["models"].get("sql")
+    tables = [t["table_name"] for t in schema.get("tables", [])]
+    out["attempts"].append({"tables": tables, "token_estimate": schema.get("token_estimate"),
+                            "schema_ddl": schema["schema_ddl"], "status": gen["status"], "sql": gen["sql"],
+                            "missing": gen["missing"], "reason": gen["reason"], "elapsed_ms": elapsed,
+                            "cost_usd": usage["cost_usd"]})
+    out["tables_used"], out["schema_ddl"] = tables, schema["schema_ddl"]
+    out["token_estimate"] = schema.get("token_estimate")
     out["status"], out["sql"], out["missing"], out["reason"] = gen["status"], gen["sql"], gen["missing"], gen["reason"]
     if gen.get("raw"):
         out["raw"] = gen["raw"]
-    return _finish(out, t0)
+    return gen
 
 
 def _finish(out: dict, t0: float) -> dict:

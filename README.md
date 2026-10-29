@@ -245,7 +245,7 @@ python benchmark/schema_search_eval.py --file benchmark/out/prep_unseen_question
 
 `POST /api/v1/translate` enchaîne le découpage (PREP), la recherche structurée et la génération avec le prompt [`prompts/sql_generate.md`](prompts/sql_generate.md). Le modèle répond par :
 - `<sql>` : la requête (statut `sql`) ;
-- `<missing>` : ce qui manque au schéma, **en mots métier** (statut `missing`) ; la recherche complémentaire viendra à l'incrément 5 ;
+- `<missing>` : ce qui manque au schéma, **en mots métier** ; le code lance alors une recherche complémentaire (`POST /select/extend` : colonnes des tables retenues et de leurs voisines, puis tables reliées), complète le schéma sans rien retirer et redemande **une seule fois** le SQL. Rien de trouvé, ou encore un manque : `cannot_answer` (« Data not available: … ») ;
 - `<cannot_answer>` : la donnée n'existe pas (statut `cannot_answer`).
 
 Les refus de PREP (`write_request`, `out_of_scope`, `ambiguous`) arrêtent la chaîne avant la recherche. La réponse donne le découpage, les tables, le schéma envoyé, les modèles utilisés, les tokens, le coût et le temps par étape. Le SQL n'est **pas encore exécuté** (incrément 4).

@@ -253,3 +253,58 @@ def test_name_hop_prefers_the_required_key():
                                       tables, cols, rels, structured.StructuredParams(), None, per_piece)
     found = names(plan)
     assert found["res_partner"] == "name:res_users.partner_id"
+
+
+# ── Recherche complémentaire (mots manquants signalés par le modèle SQL) ─────
+
+def test_neighbor_tables_follow_keys_both_ways():
+    _, tables, _, rels = build_inputs()
+    around = structured.neighbor_tables(["sale_order"], rels, tables)
+    assert around[0] == "sale_order"
+    assert {"res_partner", "crm_team", "sale_order_line"} <= set(around)   # sortantes et entrantes
+    assert "res_company" not in around                                     # clé technique ignorée
+
+
+def test_missing_word_found_as_a_column_then_added_to_the_plan():
+    _, tables, cols, rels = build_inputs()
+    params = structured.StructuredParams()
+    extra_cols, extra_tabs, report = structured.find_missing(
+        ["balance due of the invoice"], ["account_move"],
+        {("account_move", "amount_residual"): [0.72], ("account_move", "amount_total"): [0.65]},
+        [{}], tables, cols, rels, params)
+    assert extra_cols == {("account_move", "amount_residual"): "balance due of the invoice"} and not extra_tabs
+    assert report[0]["found"] == "column" and report[0]["column"] == "amount_residual"
+
+    sq = structured.StructuredQuestion.from_dict({"subject": "customer invoices"})
+    base = structured.plan_structured(sq, {"account_move": 0.6}, {}, tables, cols, rels, params)
+    assert "amount_residual" not in columns(base, "account_move")
+    plan = structured.plan_structured(sq, {"account_move": 0.6}, {}, tables, cols, rels, params,
+                                      extra_columns=extra_cols)
+    assert "amount_residual" in columns(plan, "account_move")
+    assert set(names(base)) <= set(names(plan))                            # rien n'est retiré
+
+
+def test_missing_word_found_as_a_related_table():
+    _, tables, cols, rels = build_inputs()
+    params = structured.StructuredParams()
+    extra_cols, extra_tabs, report = structured.find_missing(
+        ["country of the customer"], ["account_move"], {("account_move", "partner_id"): [0.5]},
+        [{"res_country": 0.7, "crm_stage": 0.65}], tables, cols, rels, params)
+    assert not extra_cols and extra_tabs == {"res_country": "country of the customer"}
+    assert report[0]["found"] == "table"
+    sq = structured.StructuredQuestion.from_dict({"subject": "customer invoices"})
+    plan = structured.plan_structured(sq, {"account_move": 0.6}, {}, tables, cols, rels, params,
+                                      extra_tables=extra_tabs)
+    found = names(plan)
+    assert found["res_country"] == "missing-table:country of the customer"
+    assert "res_partner" in found                                          # chemin account_move → res_partner
+
+
+def test_missing_word_not_found_is_reported():
+    _, tables, cols, rels = build_inputs()
+    extra_cols, extra_tabs, report = structured.find_missing(
+        ["carrier"], ["account_move"], {("account_move", "partner_id"): [0.55]}, [{"crm_stage": 0.5}],
+        tables, cols, rels, structured.StructuredParams())
+    assert not extra_cols and not extra_tabs
+    assert report == [{"text": "carrier", "found": None, "table": "account_move", "column": "partner_id",
+                       "similarity": 0.55}]

@@ -471,3 +471,45 @@ def test_always_include_is_imported_without_reencoding(dbs):
     with pytest.raises(ValueError):
         import_enrichment(nl, account["id"], filled, dry_run=True)
     nl.rollback()
+
+
+def test_extend_adds_the_missing_column_to_the_plan(dbs):
+    """Recherche complémentaire sur la vraie base : le mot manquant ajoute sa colonne, rien n'est retiré."""
+    from schema_service import structured
+    from schema_service.search_data import run_structured
+
+    src, nl, account = dbs
+    index_account(nl, src, account, fake_embed, load_filter_config(CONFIG_PATH))
+
+    def stored(sql, params):
+        with nl.cursor() as cur:
+            cur.execute(sql, params)
+            vec = cur.fetchone()[0]
+        return vec.to_list() if hasattr(vec, "to_list") else [float(x) for x in vec]
+
+    table_vec = stored("SELECT embedding FROM nl2sql_tables WHERE account_id = %s AND table_name = 'sale_order'",
+                       (account["id"],))
+    amount_vec = stored("""SELECT c.embedding FROM nl2sql_columns c JOIN nl2sql_tables t ON t.id = c.table_id
+                           WHERE t.account_id = %s AND t.table_name = 'sale_order' AND c.column_name = 'amount_total'""",
+                        (account["id"],))
+
+    class FakeEmbedder:
+        def embed_query(self, text, kind="tables"):
+            return table_vec if text == "sales orders" else fake_embed([text])[0]
+
+        def embed_queries(self, texts, kind="tables"):
+            return [amount_vec if t == "order total amount" else self.embed_query(t, kind) for t in texts]
+
+    sq = structured.StructuredQuestion.from_dict({"subject": "sales orders"})
+    params = structured.StructuredParams()
+    base, report = run_structured(nl, FakeEmbedder(), account["id"], "Average order value", sq, params)
+    assert report == [] and base["tables"][0]["table_name"] == "sale_order"
+    base_cols = {c["column_name"] for c in base["tables"][0]["columns"]}
+    assert "amount_total" not in base_cols
+
+    plan, report = run_structured(nl, FakeEmbedder(), account["id"], "Average order value", sq, params,
+                                  missing=["order total amount"])
+    assert report[0]["found"] == "column" and (report[0]["table"], report[0]["column"]) == ("sale_order", "amount_total")
+    cols = {c["column_name"] for c in plan["tables"][0]["columns"]}
+    assert "amount_total" in cols and base_cols <= cols
+    assert {t["table_name"] for t in base["tables"]} <= {t["table_name"] for t in plan["tables"]}
