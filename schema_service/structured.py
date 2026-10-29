@@ -222,6 +222,7 @@ def plan_structured(sq: StructuredQuestion, table_sims: dict[str, float],
     #        ajoute cette table et le chemin depuis le sujet, même à plusieurs liens.
     graph = build_graph(relations)
     subject_table = ranking[0]
+    fk_columns = {(r["from_table"], r["from_column"]) for r in relations}
     for i, pm in enumerate(piece_matches):
         sims = (piece_table_sims or [])[i] if piece_table_sims and i < len(piece_table_sims) else {}
         if pm["role"] != "group_by" or not sims:
@@ -229,6 +230,11 @@ def plan_structured(sq: StructuredQuestion, table_sims: dict[str, float],
         best = max((t for t in sims if t in tables_by_name), key=lambda t: sims[t], default=None)
         pm["table_match"] = {"table": best, "similarity": round(sims[best], 3)} if best else None
         if not best or sims[best] < params.table_piece_min or best in reasons:
+            continue
+        # Entité déjà résolue : la colonne trouvée est une clé étrangère du sujet
+        # (sale_order.team_id → crm_team) ; on n'ajoute pas une seconde table voisine.
+        top = pm["matches"][0] if pm["matches"] else None
+        if top and top["table"] in subject_set and (top["table"], top["column"]) in fk_columns:
             continue
         path = shortest_path(graph, subject_table, best, params.table_piece_hops)
         if not path:
@@ -255,7 +261,8 @@ def plan_structured(sq: StructuredQuestion, table_sims: dict[str, float],
         required = {c["column_name"] for c in cols if not c.get("is_nullable", True)}
         hops = [r for r in relations if r["from_table"] == target and r["from_column"] not in TECHNICAL_FK_COLUMNS
                 and r["to_table"] in tables_by_name and _name_column(columns_by_table.get(r["to_table"], []))]
-        hops.sort(key=lambda r: (r["to_table"] not in reasons, r["from_column"] not in required))
+        # La clé obligatoire d'abord (res_users.partner_id), puis une table déjà retenue
+        hops.sort(key=lambda r: (r["from_column"] not in required, r["to_table"] not in reasons))
         if hops:
             used.append(hops[0])
             reasons.setdefault(hops[0]["to_table"], f"name:{target}.{hops[0]['from_column']}")

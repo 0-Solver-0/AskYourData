@@ -223,3 +223,33 @@ def test_always_included_columns_follow_their_table():
     reasons = {c["column_name"]: c["reason"] for t in plan["tables"] if t["table_name"] == "account_move"
                for c in t["columns"]}
     assert reasons["move_type"] == "always"
+
+
+def test_resolved_entity_does_not_bring_a_neighbour_table():
+    # « salesperson » trouve account_move.invoice_user_id (clé du sujet) : crm_team, voisine
+    # par le texte, n'est pas ajoutée ; res_users arrive par la clé
+    sq = {"subject": "customer invoices", "group_by": ["salesperson"]}
+    plan = run(sq, {"account_move": 0.6}, {("account_move", "invoice_user_id"): {"salesperson": 0.75}},
+               table_piece_sims={"salesperson": {"crm_team": 0.7}})
+    found = names(plan)
+    assert "crm_team" not in found
+    assert found["res_users"] == "lookup:account_move.invoice_user_id"
+
+
+def test_name_hop_prefers_the_required_key():
+    # res_users → partner_id (obligatoire) plutôt que sale_team_id vers crm_team déjà retenue
+    sq = {"subject": "customer invoices", "group_by": ["salesperson", "sales team"]}
+    q = structured.StructuredQuestion.from_dict(sq)
+    _, tables, cols, rels = build_inputs()
+    cols = {**cols, "res_users": [{**c, "is_nullable": c["column_name"] != "partner_id"} for c in cols["res_users"]]
+            + [{"column_name": "sale_team_id", "data_type": "integer", "is_fk": True, "is_pk": False,
+                "is_nullable": True}]}
+    rels = rels + [{"from_table": "res_users", "from_column": "sale_team_id", "to_table": "crm_team",
+                    "to_column": "id"}]
+    texts = [t for _, t in q.pieces()]
+    column_sims = {(t, c["column_name"]): [0.1 for _ in texts] for t, cs in cols.items() for c in cs}
+    per_piece = [{"res_users": 0.7}, {"crm_team": 0.7}]
+    plan = structured.plan_structured(q, {t: 0.6 if t == "account_move" else 0.2 for t in tables}, column_sims,
+                                      tables, cols, rels, structured.StructuredParams(), None, per_piece)
+    found = names(plan)
+    assert found["res_partner"] == "name:res_users.partner_id"
