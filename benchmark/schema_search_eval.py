@@ -105,7 +105,18 @@ def run(cases: list, args) -> dict:
                                              for r in dbg.get("subject_ranking", [])[:5]))
                 for piece in dbg["pieces"]:
                     found = ", ".join(f"{m['table']}.{m['column']}={m['similarity']}" for m in piece["matches"])
-                    print(f"    {piece['role']} « {piece['text']} » → {found or 'rien'}")
+                    marks = [m for m, on in (("type", piece.get("type_checked")),
+                                             ("sujet d'abord", piece.get("subject_first")),
+                                             ("NON TROUVÉ", piece.get("not_found"))) if on]
+                    tm = piece.get("table_match")
+                    if tm:
+                        marks.append(f"table {tm['table']}={tm['similarity']}")
+                    tag = f"  [{', '.join(marks)}]" if marks else ""
+                    print(f"    {piece['role']} « {piece['text']} » → {found or 'rien'}{tag}")
+                ignored = dbg.get("value_matches_ignored") or []
+                if ignored:
+                    print("    valeurs écartées : " + ", ".join(
+                        f"{v['table_name']}.{v['column_name']}='{v['value']}'" for v in ignored))
             else:
                 print("    classement : " + ", ".join(f"{r['table_name']}={r['score']}"
                                                      for r in dbg.get("ranking", [])[:8]))

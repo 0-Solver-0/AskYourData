@@ -6,8 +6,9 @@ from schema_service import search, structured
 from tests.test_search import VALUES, build_inputs
 
 
-def run(sq_dict, table_sims, piece_sims, question=None, params=None):
-    """piece_sims : {(table, colonne): {texte du morceau: similarité}} ; 0,1 par défaut."""
+def run(sq_dict, table_sims, piece_sims, question=None, params=None, table_piece_sims=None):
+    """piece_sims : {(table, colonne): {texte du morceau: similarité}} ; 0,1 par défaut.
+    table_piece_sims : {texte du morceau: {table: similarité}} (fiches de tables)."""
     sq = structured.StructuredQuestion.from_dict(sq_dict)
     _, tables, cols, rels = build_inputs()
     texts = [t for _, t in sq.pieces()]
@@ -15,8 +16,10 @@ def run(sq_dict, table_sims, piece_sims, question=None, params=None):
                    for t, cs in cols.items() for c in cs}
     sims = {t: table_sims.get(t, 0.2) for t in tables}
     matches = search.match_values(question or " ".join([sq.subject, *sq.filters]), VALUES)
+    per_piece = [(table_piece_sims or {}).get(x, {}) for x in texts]
     return structured.plan_structured(sq, sims, column_sims, tables, cols, rels,
-                                      params or structured.StructuredParams(), matches)
+                                      params or structured.StructuredParams(min_similarity=0.5), matches,
+                                      per_piece)
 
 
 def names(plan):
@@ -75,9 +78,53 @@ def test_pieces_report_their_best_columns():
     by_text = {p["text"]: p for p in plan["pieces"]}
     assert by_text["unpaid amount"]["matches"][0] == {"table": "account_move", "column": "amount_residual",
                                                       "similarity": 0.72}
-    # Seconde correspondance gardée seulement si elle est presque aussi bonne que la première
-    assert [m["table"] for m in by_text["customer"]["matches"]] == ["account_move", "sale_order"]
+    # Sujet d'abord : sale_order.partner_id (0,60) ne bat pas assez account_move.partner_id (0,58)
+    assert [m["table"] for m in by_text["customer"]["matches"]] == ["account_move"]
+    assert by_text["customer"]["subject_first"] is True
     assert [m["table"] for m in by_text["salesperson"]["matches"]] == ["account_move"]
+    # Sans la règle, la seconde correspondance presque aussi bonne revient
+    loose = run(UNPAID, {"account_move": 0.6}, UNPAID_SIMS, params=structured.StructuredParams(subject_margin=-1, min_similarity=0.5))
+    by_text = {p["text"]: p for p in loose["pieces"]}
+    assert [m["table"] for m in by_text["customer"]["matches"]] == ["sale_order", "account_move"]
+
+
+def test_column_kinds():
+    _, _, cols, _ = build_inputs()
+    kinds = {c["column_name"]: structured.column_kind(c) for c in cols["account_move"]}
+    assert kinds["amount_residual"] == "number" and kinds["invoice_date"] == "date"
+    assert kinds["partner_id"] == "relation" and kinds["move_type"] == "text"
+    assert structured.column_kind({"column_name": "x", "data_type": "boolean"}) == "boolean"
+    assert structured.column_kind({"column_name": "x", "data_type": "integer", "odoo_type": "many2one"}) == "relation"
+
+
+def test_measure_takes_a_number_and_period_a_date():
+    sq = {"subject": "customer invoices", "measures": ["amount due"], "period": "due date"}
+    sims = {("account_move", "invoice_date"): {"amount due": 0.79, "due date": 0.8},   # date proche du texte
+            ("account_move", "amount_residual"): {"amount due": 0.77, "due date": 0.5}}
+    plan = run(sq, {"account_move": 0.6}, sims)
+    by_text = {p["text"]: p for p in plan["pieces"]}
+    assert by_text["amount due"]["matches"][0]["column"] == "amount_residual"
+    assert by_text["amount due"]["type_checked"] is True
+    assert by_text["due date"]["matches"][0]["column"] == "invoice_date"
+    unchecked = run(sq, {"account_move": 0.6}, sims, params=structured.StructuredParams(check_types=False))
+    assert {p["text"]: p for p in unchecked["pieces"]}["amount due"]["matches"][0]["column"] == "invoice_date"
+
+
+def test_another_table_wins_only_by_a_clear_margin():
+    sq = {"subject": "customer invoices", "group_by": ["customer"]}
+    sims = {("account_move", "partner_id"): {"customer": 0.58}, ("sale_order", "partner_id"): {"customer": 0.70}}
+    plan = run(sq, {"account_move": 0.6, "sale_order": 0.5}, sims)
+    assert plan["pieces"][0]["matches"][0]["table"] == "sale_order"       # 0,12 d'écart > 0,06
+    assert plan["pieces"][0]["subject_first"] is False
+
+
+def test_unrelated_cited_value_is_ignored():
+    # « Qualified » est une étape du CRM : sans lien avec les factures, la valeur n'ajoute pas crm_stage
+    sq = {"subject": "customer invoices", "measures": ["amount due"]}
+    plan = run(sq, {"account_move": 0.6}, {("account_move", "amount_residual"): {"amount due": 0.7}},
+               question="Amount due on invoices of Qualified deals")
+    assert "crm_stage" not in names(plan)
+    assert {v["table_name"] for v in plan["value_matches_ignored"]} == {"crm_stage"}
 
 
 def test_candidate_tables_limit_the_column_search():
@@ -117,3 +164,35 @@ def test_hand_written_questions_are_valid():
     for case in cases:
         structured.StructuredQuestion.from_dict(case["structured"])
         assert case["expected"]
+    for name in ("unseen_questions.yaml",):
+        extra = yaml.safe_load(open(os.path.join(os.path.dirname(path), name), encoding="utf-8"))
+        assert len(extra) == 10
+        cases += extra
+    for case in cases:
+        structured.StructuredQuestion.from_dict(case["structured"])
+        assert case["expected"]
+
+
+def test_weak_piece_is_reported_not_found():
+    sq = {"subject": "employees", "period": "hire date"}
+    plan = run(sq, {"account_move": 0.6}, {("account_move", "invoice_date"): {"hire date": 0.56}},
+               params=structured.StructuredParams())
+    assert plan["pieces"][0]["not_found"] is True and plan["pieces"][0]["matches"] == []
+
+
+def test_creation_date_is_allowed_for_a_period_only():
+    _, _, cols, _ = build_inputs()
+    created = {"column_name": "create_date", "data_type": "timestamp without time zone", "is_pk": False}
+    assert structured._usable(created, "period") and not structured._usable(created, "group_by")
+
+
+def test_group_by_naming_a_table_brings_it_with_its_path():
+    # « salesperson » ressemble à la fiche de res_users : la table vient avec le chemin depuis le sujet
+    sq = {"subject": "customer invoices", "group_by": ["salesperson"]}
+    plan = run(sq, {"account_move": 0.6}, {}, table_piece_sims={"salesperson": {"res_users": 0.7, "crm_team": 0.5}})
+    found = names(plan)
+    assert found["res_users"] == "group_by-table:salesperson"
+    assert plan["pieces"][0]["table_match"] == {"table": "res_users", "similarity": 0.7}
+    # Trop faible : rien n'est ajouté
+    plan = run(sq, {"account_move": 0.6}, {}, table_piece_sims={"salesperson": {"res_users": 0.55}})
+    assert "res_users" not in names(plan)
