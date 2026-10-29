@@ -76,3 +76,40 @@ def test_schema_error_and_missing_answer():
     c = client((200, ok_body(text='<missing>["stock value"]</missing>'), ""))
     out = pipeline.translate(c, schema_ok, "Stock value by category", 1, structured={"subject": "products"})
     assert out["status"] == "missing" and out["missing"] == ["stock value"] and out["sql"] is None
+
+
+def extend_ok(account_id, question, structured, missing):
+    return {"tables": [{"table_name": "sale_order"}, {"table_name": "stock_valuation_layer"}],
+            "schema_ddl": DDL + "\nCREATE TABLE stock_valuation_layer (value numeric);", "token_estimate": 60,
+            "missing_report": [{"text": missing[0], "found": "table", "table": "stock_valuation_layer"}]}
+
+
+def test_missing_then_extend_then_sql():
+    c = client((200, ok_body(text='<missing>["stock value"]</missing>'), ""),
+               (200, ok_body(text="<sql>SELECT sum(value) FROM stock_valuation_layer</sql>"), ""))
+    out = pipeline.translate(c, schema_ok, "Stock value", 1, structured={"subject": "stock"}, extend_fn=extend_ok)
+    assert out["status"] == "sql" and "stock_valuation_layer" in out["sql"]
+    assert [a["status"] for a in out["attempts"]] == ["missing", "sql"]
+    assert out["tables_used"] == ["sale_order", "stock_valuation_layer"]
+    assert out["missing_report"][0]["found"] == "table"
+    assert {"generation", "extend", "generation_2"} <= set(out["timings_ms"])
+    second = c.transport.calls[1]["payload"]["messages"][1]["content"]
+    assert 'You asked for: ["stock value"]' in second and "stock_valuation_layer" in second
+    assert out["usage"]["sql"]["tokens_out"] == 400                       # deux appels additionnés
+
+
+def test_nothing_found_answers_without_a_second_call():
+    c = client((200, ok_body(text='<missing>["carrier"]</missing>'), ""))
+    nothing = lambda *a: {"schema_ddl": DDL, "tables": [], "missing_report": [{"text": "carrier", "found": None}]}  # noqa: E731
+    out = pipeline.translate(c, schema_ok, "Delay per carrier", 1, structured={"subject": "deliveries"},
+                             extend_fn=nothing)
+    assert out["status"] == "cannot_answer" and "carrier" in out["reason"]
+    assert len(c.transport.calls) == 1 and len(out["attempts"]) == 1
+
+
+def test_still_missing_after_the_retry_is_a_cannot_answer():
+    c = client((200, ok_body(text='<missing>["stock value"]</missing>'), ""),
+               (200, ok_body(text='<missing>["unit cost"]</missing>'), ""))
+    out = pipeline.translate(c, schema_ok, "Stock value", 1, structured={"subject": "stock"}, extend_fn=extend_ok)
+    assert out["status"] == "cannot_answer" and "unit cost" in out["reason"]
+    assert len(c.transport.calls) == 2                                     # jamais de troisième essai

@@ -5,9 +5,11 @@ Lecture de l'index pour la recherche de schéma (pgvector). Séparé de server.p
 testable sans charger l'embedder.
 """
 
+from typing import Optional
+
 import psycopg2.extras
 
-from . import search
+from . import search, structured
 
 
 def load_search_data(conn, account_id: int, q_vector: list[float]):
@@ -103,3 +105,54 @@ def column_similarities(conn, account_id: int, table_names: list[str],
             sims = out.setdefault((table, column), [0.0] * len(vectors))
             sims[i] = float(sim)
     return out
+
+
+def run_structured(conn, embedder, account_id: int, question: str, sq, params,
+                   missing: Optional[list[str]] = None) -> tuple[dict, list]:
+    """
+    Recherche structurée ; avec `missing`, recherche complémentaire des mots manquants (colonnes des
+    tables retenues et de leurs voisines, puis fiches de tables) et plan complété.
+    Renvoie (plan, rapport des mots manquants).
+    """
+    pieces = sq.pieces()
+    subject_vec = embedder.embed_query(sq.subject, "tables")
+    piece_vecs  = embedder.embed_queries([text for _, text in pieces], "columns")
+    # Regroupements comparés aussi aux fiches de tables (« product category » → product_category)
+    group_idx = [i for i, (role, _) in enumerate(pieces) if role == "group_by"]
+    group_vecs = embedder.embed_queries([pieces[i][1] for i in group_idx], "tables") if group_idx else []
+    missing = [m for m in (missing or []) if m][:5]
+    missing_col_vecs = embedder.embed_queries(missing, "columns") if missing else []
+    missing_tab_vecs = embedder.embed_queries(missing, "tables") if missing else []
+
+    candidates, tables_by_name, columns_by_table, relations, values = \
+        load_search_data(conn, account_id, subject_vec)
+    if not candidates:
+        raise LookupError("Aucune table indexée — lancez /index d'abord")
+    table_sims = {c.table_name: c.vector_score for c in candidates}
+    names = sorted(table_sims, key=table_sims.get, reverse=True)[:params.candidate_tables]
+    column_sims = column_similarities(conn, account_id, names, piece_vecs)
+    piece_table_sims: list[dict[str, float]] = [{} for _ in pieces]
+    for i, vec in zip(group_idx, group_vecs):
+        piece_table_sims[i] = {r["table_name"]: r["similarity"]
+                               for r in vector_ranking(conn, account_id, vec, limit=5)}
+
+    value_text = question or " ".join([sq.subject, *sq.filters])
+    value_matches = search.match_values(value_text, values)
+    plan = structured.plan_structured(sq, table_sims, column_sims, tables_by_name, columns_by_table,
+                                      relations, params, value_matches, piece_table_sims)
+    report: list = []
+    if missing:
+        selected = [t["table_name"] for t in plan["tables"]]
+        around = structured.neighbor_tables(selected, relations, tables_by_name)
+        missing_sims = column_similarities(conn, account_id, around, missing_col_vecs)
+        missing_table_sims = [{r["table_name"]: r["similarity"]
+                               for r in vector_ranking(conn, account_id, vec, limit=5)}
+                              for vec in missing_tab_vecs]
+        extra_cols, extra_tabs, report = structured.find_missing(
+            missing, selected, missing_sims, missing_table_sims, tables_by_name, columns_by_table,
+            relations, params)
+        if extra_cols or extra_tabs:
+            plan = structured.plan_structured(sq, table_sims, column_sims, tables_by_name, columns_by_table,
+                                              relations, params, value_matches, piece_table_sims,
+                                              extra_columns=extra_cols, extra_tables=extra_tabs)
+    return plan, report

@@ -78,6 +78,14 @@ def llm_status() -> dict:
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
 
+def call_extend_schema(account_id: int, question: str, structured: dict, missing: list) -> dict:
+    """Recherche complémentaire des mots manquants signalés par le modèle SQL (schema_service)."""
+    resp = requests.post(f"{SCHEMA_SERVICE_URL}/select/extend", timeout=60,
+                         json={"account_id": account_id, "question": question, "structured": structured,
+                               "missing": missing, "debug": True})
+    return resp.json()
+
+
 def call_structured_schema(account_id: int, question: str, structured: dict) -> dict:
     """Recherche structurée (schema_service), diagnostic compris (morceaux « non trouvés »)."""
     resp = requests.post(f"{SCHEMA_SERVICE_URL}/select/structured", timeout=60,
@@ -344,7 +352,8 @@ def structure():
 @app.post("/api/v1/translate")
 def translate():
     """
-    Question → SQL, sans exécution : découpage (PREP) → recherche structurée → génération (SQL).
+    Question → SQL, sans exécution : découpage (PREP) → recherche structurée → génération (SQL) ;
+    si le modèle signale un manque : recherche complémentaire puis une seule nouvelle génération.
 
     Body : {
       "question":   "Top 5 customers by revenue this year",
@@ -355,7 +364,7 @@ def translate():
 
     Retourne : {status: sql | missing | cannot_answer | refused | clarification_needed | error,
                 sql, missing, reason, structured_request, prep_status, tables_used, schema_ddl,
-                not_found, models, usage, cost_usd, timings_ms}
+                not_found, attempts (un par génération), missing_report, models, usage, cost_usd, timings_ms}
     """
     data = request.get_json(silent=True) or {}
     question = (data.get("question") or "").strip()
@@ -370,7 +379,8 @@ def translate():
         return jsonify({"error": f"Configuration LLM invalide : {exc}"}), 500
     logger.info("Translate — %s", question[:80])
     out = pipeline.translate(client, call_structured_schema, question, int(account_id),
-                             structured=data.get("structured"), reasoning=data.get("reasoning"))
+                             structured=data.get("structured"), reasoning=data.get("reasoning"),
+                             extend_fn=call_extend_schema)
     logger.info("Translate — %s en %s ms (%s $)", out["status"], out["timings_ms"].get("total"), out["cost_usd"])
     return jsonify(out)
 

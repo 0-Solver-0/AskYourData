@@ -154,12 +154,91 @@ def _name_column(columns: list[dict]) -> Optional[str]:
     return next((n for n in NAME_COLUMNS if n in names), None)
 
 
+def _path_from_selected(graph: dict, selected: list[str], target: str, max_hops: int) -> Optional[list[str]]:
+    """Plus court chemin vers `target` depuis la table retenue la plus proche."""
+    best = None
+    for start in selected:
+        path = shortest_path(graph, start, target, max_hops)
+        if path and (best is None or len(path) < len(best)):
+            best = path
+    return best
+
+
+def neighbor_tables(selected: list[str], relations: list[dict], tables_by_name: dict[str, dict]) -> list[str]:
+    """Tables retenues + tables reliées par une clé (dans un sens ou dans l'autre), clés techniques exclues."""
+    chosen = set(selected)
+    out = list(selected)
+    for r in relations:
+        if r["from_column"] in TECHNICAL_FK_COLUMNS:
+            continue
+        for a, b in ((r["from_table"], r["to_table"]), (r["to_table"], r["from_table"])):
+            if a in chosen and b in tables_by_name and b not in out:
+                out.append(b)
+    return out
+
+
+def find_missing(phrases: list[str], selected: list[str], column_sims: dict[tuple[str, str], list[float]],
+                 phrase_table_sims: list[dict[str, float]], tables_by_name: dict[str, dict],
+                 columns_by_table: dict[str, list[dict]], relations: list[dict], params: StructuredParams,
+                 max_new_tables: int = 4) -> tuple[dict, dict, list[dict]]:
+    """
+    Recherche complémentaire : chaque mot manquant (en mots métier) est cherché
+      a. parmi les colonnes des tables retenues et de leurs voisines (`column_sims`, une similarité
+         par mot) : une colonne au-dessus de min_similarity suffit ;
+      b. sinon parmi les fiches de tables (`phrase_table_sims`) : une table au-dessus de
+         table_piece_min, reliée à une table retenue en table_piece_hops liens au plus.
+    Renvoie (extra_columns, extra_tables, rapport par mot) pour plan_structured.
+    """
+    graph = build_graph(relations)
+    usable = {(t, c["column_name"]) for t, cols in columns_by_table.items() for c in cols if _usable(c, "period")}
+    extra_columns: dict[tuple[str, str], str] = {}
+    extra_tables: dict[str, str] = {}
+    report = []
+    new_tables: set[str] = set()
+    for i, text in enumerate(phrases):
+        scored = sorted(((float(sims[i]), t, c) for (t, c), sims in column_sims.items()
+                         if i < len(sims) and (t, c) in usable), reverse=True)
+        if scored and scored[0][0] >= params.min_similarity and \
+                (scored[0][1] in selected or scored[0][1] in new_tables or len(new_tables) < max_new_tables):
+            sim, t, c = scored[0]
+            extra_columns[(t, c)] = text
+            if t not in selected:
+                new_tables.add(t)
+            report.append({"text": text, "found": "column", "table": t, "column": c, "similarity": round(sim, 3)})
+            continue
+        sims = phrase_table_sims[i] if i < len(phrase_table_sims) else {}
+        ranked = sorted(((v, t) for t, v in sims.items() if t in tables_by_name), reverse=True)
+        hit = None
+        for sim, t in ranked:
+            if sim < params.table_piece_min:
+                break
+            if t in selected or _path_from_selected(graph, selected, t, params.table_piece_hops):
+                hit = (sim, t)
+                break
+        if hit and (hit[1] in selected or len(new_tables) < max_new_tables):
+            sim, t = hit
+            if t not in selected:
+                extra_tables[t] = text
+                new_tables.add(t)
+            report.append({"text": text, "found": "table", "table": t, "column": None, "similarity": round(sim, 3)})
+            continue
+        best = scored[0] if scored else None
+        report.append({"text": text, "found": None, "table": best[1] if best else None,
+                       "column": best[2] if best else None,
+                       "similarity": round(best[0], 3) if best else None})
+    return extra_columns, extra_tables, report
+
+
 def plan_structured(sq: StructuredQuestion, table_sims: dict[str, float],
                     column_sims: dict[tuple[str, str], list[float]], tables_by_name: dict[str, dict],
                     columns_by_table: dict[str, list[dict]], relations: list[dict],
                     params: StructuredParams, value_matches: Optional[list[ValueMatch]] = None,
-                    piece_table_sims: Optional[list[dict[str, float]]] = None) -> dict:
+                    piece_table_sims: Optional[list[dict[str, float]]] = None,
+                    extra_columns: Optional[dict[tuple[str, str], str]] = None,
+                    extra_tables: Optional[dict[str, str]] = None) -> dict:
     """
+    `extra_columns` / `extra_tables` : ajouts de la recherche complémentaire (find_missing),
+    {(table, colonne): mot manquant} et {table: mot manquant} ; rien n'est retiré du plan de base.
     `table_sims` : {table: similarité avec le sujet} ;
     `column_sims` : {(table, colonne): [similarité avec chaque morceau de sq.pieces()]} ;
     `piece_table_sims` : pour chaque morceau, {table: similarité du morceau avec la fiche de table}
@@ -242,6 +321,21 @@ def plan_structured(sq: StructuredQuestion, table_sims: dict[str, float],
         reasons[best] = f"group_by-table:{pm['text']}"
         for t in path[1:-1]:
             reasons.setdefault(t, f"join:{subject_table}↔{best}")
+    # 3 ter. Ajouts de la recherche complémentaire (mots manquants signalés par le modèle SQL)
+    for (table, cname), text in (extra_columns or {}).items():
+        if table not in tables_by_name:
+            continue
+        matched_cols.setdefault(table, set()).add(cname)
+        reasons.setdefault(table, f"missing:{text}")
+    for table, text in (extra_tables or {}).items():
+        if table in reasons or table not in tables_by_name:
+            continue
+        path = _path_from_selected(graph, list(reasons), table, params.table_piece_hops)
+        if not path:
+            continue
+        reasons[table] = f"missing-table:{text}"
+        for t in path[1:-1]:
+            reasons.setdefault(t, f"join:{path[0]}↔{table}")
     main = list(reasons)
 
     # 4. Clés étrangères retenues → tables cibles (noms), puis saut vers une table qui a un nom
