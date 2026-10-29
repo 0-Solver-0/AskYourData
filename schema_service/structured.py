@@ -198,15 +198,19 @@ def find_missing(phrases: list[str], selected: list[str], column_sims: dict[tupl
     for i, text in enumerate(phrases):
         scored = sorted(((float(sims[i]), t, c) for (t, c), sims in column_sims.items()
                          if i < len(sims) and (t, c) in usable), reverse=True)
-        # La meilleure colonne d'une table déjà retenue ET la meilleure colonne tout court (si elles
-        # diffèrent) : « manager » → hr_employee.parent_id et hr_department.manager_id ; le modèle SQL
-        # choisit d'après les libellés et les notes. Quelques tokens de plus, moins de faux « manque ».
-        in_selected = next((x for x in scored if x[1] in selected), None)
+        # La meilleure colonne de la table du sujet, celle des autres tables retenues ET la meilleure
+        # colonne tout court (si elles diffèrent) : « manager » → hr_employee.parent_id et
+        # hr_department.manager_id ; le modèle SQL choisit d'après les libellés et les notes.
+        # Ordre : table du sujet (première retenue), autres tables retenues, puis toutes ; 3 au plus.
+        subject_table = selected[0] if selected else None
+        in_subject = next((x for x in scored if x[1] == subject_table), None)
+        in_selected = next((x for x in scored if x[1] in selected and x[1] != subject_table), None)
         picks = []
-        if in_selected and in_selected[0] >= params.min_similarity:
-            picks.append(in_selected)
-        if scored and scored[0] is not in_selected and scored[0][0] >= params.min_similarity and \
-                (scored[0][1] in new_tables or len(new_tables) < max_new_tables):
+        for cand in (in_subject, in_selected):
+            if cand and cand[0] >= params.min_similarity:
+                picks.append(cand)
+        if scored and scored[0] not in picks and scored[0][0] >= params.min_similarity and \
+                (scored[0][1] in selected or scored[0][1] in new_tables or len(new_tables) < max_new_tables):
             picks.append(scored[0])
         if picks:
             for sim, t, c in picks:

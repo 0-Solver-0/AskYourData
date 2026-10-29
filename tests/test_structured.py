@@ -328,3 +328,14 @@ def test_per_company_json_columns_are_flagged():
     assert "per-company JSON" in comment and "translatable" not in comment
     assert "translatable JSON" in search.column_comment({"column_name": "name", "data_type": "jsonb",
                                                          "odoo_type": "char"})
+
+
+def test_missing_word_prefers_the_subject_table_column():
+    # « manager » : hr_department (retenue, non sujet) a la meilleure colonne, mais celle du sujet est gardée
+    _, tables, cols, rels = build_inputs()
+    extra_cols, _, report = structured.find_missing(
+        ["vendor of the bill"], ["account_move", "purchase_order"],
+        {("purchase_order", "partner_id"): [0.8], ("account_move", "partner_id"): [0.68]},
+        [{}], tables, cols, rels, structured.StructuredParams())
+    assert ("account_move", "partner_id") in extra_cols and ("purchase_order", "partner_id") in extra_cols
+    assert (report[0]["table"], report[0]["column"]) == ("account_move", "partner_id")

@@ -68,8 +68,9 @@ def main() -> int:
             print("    " + data["sql"].replace("\n", "\n    "))
         attempts = data.get("attempts") or []
         if len(attempts) > 1:
-            print(f"    1er essai : manque {attempts[0].get('missing')} → recherche : " + ", ".join(
-                f"{r['text']} → {r.get('table') if r.get('found') else 'non trouvé'}"
+            print(f"    1er essai : manque {attempts[0].get('missing')} → recherche : " + "; ".join(
+                f"{r['text']} → " + (", ".join(f"{x['table']}.{x['column']}" if x.get("column") else x["table"]
+                                               for x in [r, *(r.get("also") or [])]) if r.get("found") else "non trouvé")
                 for r in data.get("missing_report") or []))
         if data.get("missing"):
             print(f"    manque : {data['missing']}")
