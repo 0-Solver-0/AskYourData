@@ -4,7 +4,7 @@ Parler avec ses données : une question en anglais sur Odoo 18, une réponse tir
 
 Architecture complète et décisions : [`documentation/ARCHITECTURE.md`](documentation/ARCHITECTURE.md).
 
-> **État : en construction.** La recherche de schéma fonctionne ; la génération SQL (Muse Spark via API) et l'exécution sont en cours de branchement. `/api/v1/translate` renvoie pour l'instant le schéma réduit, avec `sql: null`.
+> **État : en construction.** La recherche de schéma, le découpage (PREP) et la génération SQL fonctionnent ; la vérification et l'exécution du SQL sont en cours de branchement. `/api/v1/translate` renvoie le SQL sans l'exécuter.
 
 ## Architecture
 
@@ -239,6 +239,21 @@ Mesure sur un fichier de questions, puis recherche sur le découpage obtenu :
 ```bash
 python benchmark/prep_eval.py --file benchmark/unseen_questions.yaml
 python benchmark/schema_search_eval.py --file benchmark/out/prep_unseen_questions.yaml --verbose
+```
+
+## Génération SQL (rôle SQL, sans exécution)
+
+`POST /api/v1/translate` enchaîne le découpage (PREP), la recherche structurée et la génération avec le prompt [`prompts/sql_generate.md`](prompts/sql_generate.md). Le modèle répond par :
+- `<sql>` : la requête (statut `sql`) ;
+- `<missing>` : ce qui manque au schéma, **en mots métier** (statut `missing`) ; la recherche complémentaire viendra à l'incrément 5 ;
+- `<cannot_answer>` : la donnée n'existe pas (statut `cannot_answer`).
+
+Les refus de PREP (`write_request`, `out_of_scope`, `ambiguous`) arrêtent la chaîne avant la recherche. La réponse donne le découpage, les tables, le schéma envoyé, les modèles utilisés, les tokens, le coût et le temps par étape. Le SQL n'est **pas encore exécuté** (incrément 4).
+
+```bash
+curl -X POST http://localhost:5000/api/v1/translate -H "Content-Type: application/json" \
+  -d '{"question": "Top 5 customers by revenue this year", "account_id": 1}'
+python benchmark/sql_eval.py --file benchmark/unseen_questions.yaml      # SQL à relire : benchmark/out/sql_*.md
 ```
 
 ## Annotations
