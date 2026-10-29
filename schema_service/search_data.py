@@ -24,7 +24,7 @@ def load_search_data(conn, account_id: int, q_vector: list[float]):
         tables = [dict(r) for r in cur.fetchall()]
         cur.execute("""
             SELECT t.table_name, c.column_name, c.data_type, c.is_pk, c.is_fk, c.is_nullable,
-                   c.label, c.synonyms, c.notes, c.display, c.odoo_label, c.odoo_type, c.selection_values,
+                   c.label, c.synonyms, c.notes, c.display, c.always_include, c.odoo_label, c.odoo_type, c.selection_values,
                    CASE WHEN c.embedding IS NULL THEN 0 ELSE 1 - (c.embedding <=> %s::vector) END AS similarity
             FROM nl2sql_columns c JOIN nl2sql_tables t ON t.id = c.table_id
             WHERE t.account_id = %s

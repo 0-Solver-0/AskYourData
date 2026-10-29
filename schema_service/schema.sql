@@ -72,6 +72,8 @@ ALTER TABLE nl2sql_columns ADD COLUMN IF NOT EXISTS relation_model   VARCHAR(200
 ALTER TABLE nl2sql_columns ADD COLUMN IF NOT EXISTS selection_values TEXT;
 ALTER TABLE nl2sql_columns ADD COLUMN IF NOT EXISTS manual_override  BOOLEAN DEFAULT FALSE;
 ALTER TABLE nl2sql_columns ADD COLUMN IF NOT EXISTS embedding        vector(384);
+-- v7 : colonne toujours envoyée quand sa table est retenue (statut, type de document…)
+ALTER TABLE nl2sql_columns ADD COLUMN IF NOT EXISTS always_include   BOOLEAN DEFAULT FALSE;
 
 -- ── Relations (clés étrangères) ───────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS nl2sql_relations (

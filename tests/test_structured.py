@@ -196,3 +196,30 @@ def test_group_by_naming_a_table_brings_it_with_its_path():
     # Trop faible : rien n'est ajouté
     plan = run(sq, {"account_move": 0.6}, {}, table_piece_sims={"salesperson": {"res_users": 0.55}})
     assert "res_users" not in names(plan)
+
+
+def test_table_reached_by_a_group_by_gets_its_name():
+    # res_users n'a pas de nom : elle suit partner_id vers res_partner, même sans clé suivie
+    sq = {"subject": "customer invoices", "group_by": ["salesperson"]}
+    plan = run(sq, {"account_move": 0.6}, {}, table_piece_sims={"salesperson": {"res_users": 0.7}})
+    found = names(plan)
+    assert found["res_partner"] == "name:res_users.partner_id"
+    assert "FOREIGN KEY (partner_id) REFERENCES res_partner(id)" in plan["schema_ddl"]
+
+
+def test_always_included_columns_follow_their_table():
+    # move_type marqué par l'enrichissement : envoyé même si aucun morceau ne le demande
+    sq = {"subject": "customer invoices", "measures": ["amount due"]}
+    sims = {("account_move", "amount_residual"): {"amount due": 0.7}}
+    plan = run(sq, {"account_move": 0.6}, sims)
+    assert "move_type" not in columns(plan, "account_move")
+    q = structured.StructuredQuestion.from_dict(sq)
+    _, tables, cols, rels = build_inputs()
+    cols = {t: [{**c, "always_include": c["column_name"] == "move_type"} for c in cs] for t, cs in cols.items()}
+    column_sims = {(t, c["column_name"]): [sims.get((t, c["column_name"]), {}).get("amount due", 0.1)]
+                   for t, cs in cols.items() for c in cs}
+    plan = structured.plan_structured(q, {t: 0.6 if t == "account_move" else 0.2 for t in tables}, column_sims,
+                                      tables, cols, rels, structured.StructuredParams())
+    reasons = {c["column_name"]: c["reason"] for t in plan["tables"] if t["table_name"] == "account_move"
+               for c in t["columns"]}
+    assert reasons["move_type"] == "always"
