@@ -26,7 +26,8 @@ Le découpage est écrit à la main pour l'instant ; il sera produit par le rôl
      (res_users → partner_id → res_partner) ;
   5. jointures entre tables retenues (graphe des clés étrangères) ; une valeur citée n'ajoute
      sa table que si celle-ci est reliée directement à une table retenue ;
-  6. schéma minimal : clé primaire, colonnes retenues, clés de jointure, colonne de nom.
+  6. schéma minimal : clé primaire, colonnes retenues, colonnes « toujours envoyées » (enrichissement :
+     statut, type de document…), clés de jointure, colonne de nom.
 """
 
 from __future__ import annotations
@@ -246,10 +247,11 @@ def plan_structured(sq: StructuredQuestion, table_sims: dict[str, float],
             if r and r["to_table"] in tables_by_name and r["to_table"] != table:
                 used.append(r)
                 reasons.setdefault(r["to_table"], f"lookup:{table}.{cname}")
-    for target in [t for t, why in reasons.items() if why.startswith("lookup:")]:
+    def add_name_hop(target: str) -> None:
+        """Table sans colonne de nom : suivre sa clé (obligatoire de préférence) vers une table qui en a."""
         cols = columns_by_table.get(target, [])
         if _name_column(cols):
-            continue
+            return
         required = {c["column_name"] for c in cols if not c.get("is_nullable", True)}
         hops = [r for r in relations if r["from_table"] == target and r["from_column"] not in TECHNICAL_FK_COLUMNS
                 and r["to_table"] in tables_by_name and _name_column(columns_by_table.get(r["to_table"], []))]
@@ -257,6 +259,9 @@ def plan_structured(sq: StructuredQuestion, table_sims: dict[str, float],
         if hops:
             used.append(hops[0])
             reasons.setdefault(hops[0]["to_table"], f"name:{target}.{hops[0]['from_column']}")
+
+    for target in [t for t, why in reasons.items() if why.startswith("lookup:")]:
+        add_name_hop(target)
 
     # 5. Jointures entre tables principales, valeurs citées
     for t, why in join_tables(graph, main, max_hops=2).items():
@@ -276,6 +281,10 @@ def plan_structured(sq: StructuredQuestion, table_sims: dict[str, float],
     for m in value_matches:
         reasons.setdefault(m.table_name, f"value:{m.table_name}.{m.column_name}")
         matched_cols.setdefault(m.table_name, set()).add(m.column_name)
+    # Toute table ajoutée pour relier ou regrouper (jointure, regroupement, valeur) doit aussi
+    # pouvoir afficher un nom : res_users arrivée par une jointure → res_partner.
+    for target in [t for t, why in reasons.items() if why.startswith(("join:", "group_by-table:", "value:"))]:
+        add_name_hop(target)
     core = [t for t, why in reasons.items() if not why.startswith(("lookup:", "name:"))]
     used += [r for r in pick_join_relations(relations, set(core), columns_by_table) if r not in used]
     # Une table de valeur ou de nom doit être reliée : clé directe vers une table déjà retenue
@@ -303,6 +312,8 @@ def plan_structured(sq: StructuredQuestion, table_sims: dict[str, float],
                 chosen.append((c, "primary_key"))
             elif c["column_name"] in matched_cols.get(table, set()):
                 chosen.append((c, "matched"))
+            elif c.get("always_include"):
+                chosen.append((c, "always"))
             elif c["column_name"] in join_cols.get(table, set()):
                 chosen.append((c, "join"))
             elif c["column_name"] in keep:
