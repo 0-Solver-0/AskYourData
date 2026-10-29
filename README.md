@@ -15,7 +15,7 @@ question (EN)
 api_service      :5000  Flask + Gunicorn   orchestre le pipeline
    │
    ├─► schema_service :8002  embedder local (CPU) + pgvector   tables, colonnes, relations
-   └─► LLM via API (à venir)  rôle PREP : Muse Spark Open (Baseten) · rôle SQL : Muse Spark (API Meta)
+   └─► LLM via API            rôle PREP et rôle SQL : Muse Spark 1.3 (API Meta), secours Muse Spark Open (Baseten)
 
 postgres_nl2sql  :5433  pgvector/pg16       métadonnées + embeddings
 postgres_odoo    :5432  postgres:16-alpine  base Odoo
@@ -201,6 +201,26 @@ curl -X POST "http://localhost:5000/api/v1/schema/import?account_id=1" \
 - Mesurer l'effet : `schema_search_eval.py` affiche le **rang des tables attendues par vecteur seul** (question brute contre fiches de tables, sans mots ni règles). Des questions nouvelles sur un module se mettent dans un fichier à part (`--file benchmark/account_questions.yaml`).
 
 Détails et règles : [`enrichment/README.md`](enrichment/README.md).
+
+## Modèles LLM par rôle
+
+Deux rôles, chacun avec un profil principal et un profil de secours, choisis dans `.env` :
+
+| Rôle | Sert à | Variables |
+|---|---|---|
+| `prep` | Découper la question (`prompts/prep_structure.md`) | `PREP_PROVIDER`, `PREP_FALLBACK`, `PREP_REASONING` |
+| `sql` | Écrire et corriger le SQL | `SQL_PROVIDER`, `SQL_FALLBACK`, `SQL_REASONING` |
+
+- **Profils** (URL, modèle, paramètre de raisonnement, prix) : [`config/llm_providers.yaml`](config/llm_providers.yaml), versionné et **sans aucune clé**. Profils fournis : `meta_spark` (`muse-spark-1.3`, API Meta), `baseten_spark_open` (`meta-models/muse-spark-open-1026`), `local`.
+- **Clés** : uniquement dans `.env` (`META_API_KEY`, `BASETEN_API_KEY`) ; jamais dans Git, les journaux ou les réponses.
+- **Secours** : erreur réseau, 429 ou 5xx → un nouvel essai, puis le profil de secours ; clé absente ou refusée → secours directement.
+- **Télémétrie** de chaque appel : tokens (entrée, cache, sortie, raisonnement), temps, coût calculé depuis le profil.
+
+```bash
+curl http://localhost:5000/api/v1/llm                                   # profils et présence des clés, sans appel
+curl -X POST http://localhost:5000/api/v1/llm/test -H "Content-Type: application/json" \
+  -d '{"role": "prep", "prompt": "Reply with the single word OK."}'     # appel réel
+```
 
 ## Annotations
 

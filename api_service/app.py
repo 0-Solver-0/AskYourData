@@ -20,6 +20,8 @@ Endpoints :
   GET  /api/v1/schema/modules   — modules Odoo de l'index
   GET  /api/v1/schema/export    — fichier d'enrichissement d'un module (JSON)
   POST /api/v1/schema/import    — applique un fichier d'enrichissement (dry_run possible)
+  GET  /api/v1/llm              — profils LLM choisis par rôle (sans secret)
+  POST /api/v1/llm/test         — appel réel d'un rôle (vérifie la clé et le modèle)
 """
 
 import logging
@@ -27,6 +29,8 @@ import os
 
 import requests
 from flask import Flask, jsonify, request
+
+from api_service.llm import ROLES, LLMClient, LLMError
 
 # ── Logging ────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -42,6 +46,31 @@ SECRET_KEY          = os.getenv("SECRET_KEY",          "dev-secret")
 app = Flask(__name__)
 app.json.sort_keys = False   # garder l'ordre des champs (fichiers d'enrichissement lisibles)
 app.config["SECRET_KEY"] = SECRET_KEY
+
+
+# ── Client LLM (rôles prep et sql) ──────────────────────────────────────────
+_llm: LLMClient | None = None
+_llm_error: str | None = None
+
+
+def get_llm() -> LLMClient:
+    """Client créé au premier usage ; une configuration invalide est signalée, pas fatale."""
+    global _llm, _llm_error
+    if _llm is None:
+        try:
+            _llm = LLMClient.from_env()
+            _llm_error = None
+        except Exception as exc:  # noqa: BLE001
+            _llm_error = str(exc)
+            raise
+    return _llm
+
+
+def llm_status() -> dict:
+    try:
+        return get_llm().describe()
+    except Exception:  # noqa: BLE001
+        return {"error": _llm_error}
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
@@ -81,8 +110,36 @@ def health():
     return jsonify({
         "api":      "ok",
         "services": statuses,
+        "llm":      llm_status(),     # configuration seulement : aucun appel, aucun token
         "ready":    all_ok,
     })
+
+
+@app.get("/api/v1/llm")
+def llm_config():
+    """Profil principal et de secours de chaque rôle, et présence des clés (jamais leur valeur)."""
+    return jsonify(llm_status())
+
+
+@app.post("/api/v1/llm/test")
+def llm_test():
+    """
+    Appel réel d'un rôle, pour vérifier la clé, le modèle et le secours.
+    Body : {"role": "prep" | "sql", "prompt": "Say OK", "max_tokens": 200}
+    """
+    data = request.get_json(silent=True) or {}
+    role = (data.get("role") or "prep").lower()
+    if role not in ROLES:
+        return jsonify({"error": f"'role' doit valoir {' ou '.join(ROLES)}"}), 400
+    prompt = (data.get("prompt") or "Reply with the single word OK.").strip()
+    try:
+        result = get_llm().complete(role, [{"role": "user", "content": prompt}],
+                                    max_tokens=int(data.get("max_tokens") or 1000))
+    except LLMError as exc:
+        return jsonify({"error": str(exc), "attempts": exc.attempts}), 502
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"error": f"Configuration LLM invalide : {exc}"}), 500
+    return jsonify({"text": result.text, **result.telemetry()})
 
 
 @app.get("/api/v1/schemas")
