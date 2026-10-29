@@ -4,7 +4,7 @@ Parler avec ses données : une question en anglais sur Odoo 18, une réponse tir
 
 Architecture complète et décisions : [`documentation/ARCHITECTURE.md`](documentation/ARCHITECTURE.md).
 
-> **État : en construction.** La recherche de schéma, le découpage (PREP) et la génération SQL fonctionnent ; la vérification et l'exécution du SQL sont en cours de branchement. `/api/v1/translate` renvoie le SQL sans l'exécuter.
+> **État : en construction.** La chaîne complète fonctionne : découpage (PREP), recherche de schéma, génération SQL, vérification, exécution en lecture seule et réponse (`/api/v1/ask`). `/api/v1/translate` renvoie le SQL sans l'exécuter.
 
 ## Architecture
 
@@ -248,13 +248,36 @@ python benchmark/schema_search_eval.py --file benchmark/out/prep_unseen_question
 - `<missing>` : ce qui manque au schéma, **en mots métier** ; le code lance alors une recherche complémentaire (`POST /select/extend` : colonnes des tables retenues et de leurs voisines, puis tables reliées), complète le schéma sans rien retirer et redemande **une seule fois** le SQL. Rien de trouvé, ou encore un manque : `cannot_answer` (« Data not available: … ») ;
 - `<cannot_answer>` : la donnée n'existe pas (statut `cannot_answer`).
 
-Les refus de PREP (`write_request`, `out_of_scope`, `ambiguous`) arrêtent la chaîne avant la recherche. La réponse donne le découpage, les tables, le schéma envoyé, les modèles utilisés, les tokens, le coût et le temps par étape. Le SQL n'est **pas encore exécuté** (incrément 4).
+Les refus de PREP (`write_request`, `out_of_scope`, `ambiguous`) arrêtent la chaîne avant la recherche. La réponse donne le découpage, les tables, le schéma envoyé, les modèles utilisés, les tokens, le coût et le temps par étape. `translate` n'exécute pas le SQL : voir `ask` ci-dessous.
 
 ```bash
 curl -X POST http://localhost:5000/api/v1/translate -H "Content-Type: application/json" \
   -d '{"question": "Top 5 customers by revenue this year", "account_id": 1}'
 python benchmark/sql_eval.py --file benchmark/unseen_questions.yaml      # SQL à relire : benchmark/out/sql_*.md
 python tools/try_question.py "Top 5 customers by revenue this year"      # une question, étape par étape
+```
+
+## Question → réponse (vérification et exécution)
+
+`POST /api/v1/ask` fait tout `translate`, puis :
+1. **Vérification** par le code ([`api_service/validate.py`](api_service/validate.py), sqlglot) : une seule instruction `SELECT`/`WITH`, aucune écriture (CTE compris), pas de `SELECT INTO`, `FOR UPDATE`, `SELECT *` ni de fonction système (`pg_*`, `query_to_xml`…) ; **uniquement les tables et colonnes du schéma envoyé** ; aucune table ou colonne sensible ([`api_service/sensitive.py`](api_service/sensitive.py)) ; `LIMIT 1000` ajouté s'il manque.
+2. **Exécution** ([`api_service/executor.py`](api_service/executor.py)) avec un rôle PostgreSQL dédié en lecture seule, transaction en lecture seule, `statement_timeout` (`EXEC_TIMEOUT_MS`), `EXPLAIN` d'abord (coût maximal `EXEC_MAX_COST`).
+3. **Correction** : requête refusée ou erreur de la base → le modèle SQL reçoit sa requête et l'erreur exacte, et corrige (**2 fois au plus**), puis échec explicite.
+4. **Réponse** construite par le code à partir des lignes ([`api_service/answer.py`](api_service/answer.py)) : colonnes, lignes, résumé par gabarit. **Aucun chiffre écrit par un modèle.**
+
+Rôle en lecture seule (une fois, puis après l'installation d'un module Odoo) : choisir `EXEC_DB_PASSWORD` dans `.env`, puis
+
+```powershell
+docker run --rm --network nl2sql_net -v ${PWD}:/w -w /w python:3.11-slim sh -c "pip install -q psycopg2-binary && python tools/create_readonly_role.py"
+```
+
+Le script crée le rôle `EXEC_DB_USER`, masque les tables et colonnes sensibles (`res_users.password`, `ir_config_parameter`…) et vérifie : lecture permise, mot de passe refusé, écriture refusée. `/api/v1/health` indique `execution.status = ok`.
+
+```bash
+curl -X POST http://localhost:5000/api/v1/ask -H "Content-Type: application/json" \
+  -d '{"question": "Top 5 customers by revenue this year", "account_id": 1}'
+python benchmark/sql_eval.py --file benchmark/unseen_questions.yaml --execute   # résultats : benchmark/out/ask_*.md
+python tools/try_question.py "Top 5 customers by revenue this year" --execute
 ```
 
 ## Annotations

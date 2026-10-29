@@ -8,6 +8,7 @@ Pipeline actuel :
   2. génération SQL   — rôle LLM `sql` (prompts/sql_generate.md), sans exécution pour l'instant
 
 Endpoints :
+  POST /api/v1/ask         — question → découpage → schéma → SQL → vérification → exécution → réponse
   POST /api/v1/translate   — question → découpage → schéma → SQL (sans exécution)
   POST /api/v1/schema/debug — diagnostic de la recherche de schéma
   POST /api/v1/schema/structured — recherche à partir d'une question découpée (sujet, mesures…)
@@ -31,7 +32,7 @@ import os
 import requests
 from flask import Flask, jsonify, request
 
-from api_service import pipeline
+from api_service import executor, pipeline
 from api_service.llm import ROLES, LLMClient, LLMError
 from api_service.prep import structure_question
 
@@ -120,6 +121,7 @@ def health():
         "api":      "ok",
         "services": statuses,
         "llm":      llm_status(),     # configuration seulement : aucun appel, aucun token
+        "execution": executor.ping(),  # rôle PostgreSQL en lecture seule
         "ready":    all_ok,
     })
 
@@ -382,6 +384,37 @@ def translate():
                              structured=data.get("structured"), reasoning=data.get("reasoning"),
                              extend_fn=call_extend_schema)
     logger.info("Translate — %s en %s ms (%s $)", out["status"], out["timings_ms"].get("total"), out["cost_usd"])
+    return jsonify(out)
+
+
+@app.post("/api/v1/ask")
+def ask():
+    """
+    Question → réponse tirée de la base : translate, puis vérification du SQL, exécution en lecture
+    seule, correction par le modèle SQL avec l'erreur exacte (2 fois au plus), résumé par gabarit.
+
+    Body : {"question": "...", "account_id": 1, "structured": {...} (facultatif),
+            "reasoning": {"prep": "low", "sql": "low"} (facultatif)}
+
+    Retourne les champs de translate, plus : status ok, answer {columns, rows, row_count, truncated,
+    summary}, executed_sql, checks (une entrée par vérification / exécution).
+    """
+    data = request.get_json(silent=True) or {}
+    question = (data.get("question") or "").strip()
+    account_id = data.get("account_id")
+    if not question:
+        return jsonify({"error": "'question' obligatoire"}), 400
+    if not account_id:
+        return jsonify({"error": "'account_id' obligatoire"}), 400
+    try:
+        client = get_llm()
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"error": f"Configuration LLM invalide : {exc}"}), 500
+    logger.info("Ask — %s", question[:80])
+    out = pipeline.ask(client, call_structured_schema, executor.execute, question, int(account_id),
+                       structured=data.get("structured"), reasoning=data.get("reasoning"),
+                       extend_fn=call_extend_schema)
+    logger.info("Ask — %s en %s ms (%s $)", out["status"], out["timings_ms"].get("total"), out["cost_usd"])
     return jsonify(out)
 
 

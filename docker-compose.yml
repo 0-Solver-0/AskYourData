@@ -134,14 +134,23 @@ services:
       SECRET_KEY:          ${SECRET_KEY:-changeme_in_production}
       # Rôles LLM (profils dans config/llm_providers.yaml) et clés (dans .env uniquement)
       PREP_PROVIDER:       ${PREP_PROVIDER:-meta_spark}
-      PREP_FALLBACK:       ${PREP_FALLBACK:-baseten_spark_open}
+      # « -» et non « :- » : une valeur vide dans .env désactive le secours
+      PREP_FALLBACK:       ${PREP_FALLBACK-baseten_spark_open}
       PREP_REASONING:      ${PREP_REASONING:-}
       SQL_PROVIDER:        ${SQL_PROVIDER:-meta_spark}
-      SQL_FALLBACK:        ${SQL_FALLBACK:-baseten_spark_open}
+      SQL_FALLBACK:        ${SQL_FALLBACK-baseten_spark_open}
       SQL_REASONING:       ${SQL_REASONING:-}
       META_API_KEY:        ${META_API_KEY:-}
       BASETEN_API_KEY:     ${BASETEN_API_KEY:-}
       LOCAL_API_KEY:       ${LOCAL_API_KEY:-}
+      # Exécution en lecture seule sur la base source (rôle créé par tools/create_readonly_role.py)
+      SOURCE_DB_HOST:      ${SOURCE_DB_HOST:-postgres_odoo}
+      SOURCE_DB_PORT:      ${SOURCE_DB_PORT:-5432}
+      SOURCE_DB_NAME:      ${SOURCE_DB_NAME:-odoo}
+      EXEC_DB_USER:        ${EXEC_DB_USER:-askyourdata}
+      EXEC_DB_PASSWORD:    ${EXEC_DB_PASSWORD:-}
+      EXEC_TIMEOUT_MS:     ${EXEC_TIMEOUT_MS:-10000}
+      EXEC_MAX_COST:       ${EXEC_MAX_COST:-5000000}
       OMP_NUM_THREADS:     "4"
       CUDA_VISIBLE_DEVICES: ""
       TOKENIZERS_PARALLELISM: "false"

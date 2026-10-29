@@ -44,7 +44,8 @@ RUN pip install --upgrade pip && \
         sentence-transformers==4.1.0 \
         psycopg2-binary==2.9.9 \
         pgvector==0.3.2 \
-        pyyaml==6.0.2
+        pyyaml==6.0.2 \
+        sqlglot==26.17.1
 
 # ── Image finale ───────────────────────────────────────────────────────────────
 FROM base AS final

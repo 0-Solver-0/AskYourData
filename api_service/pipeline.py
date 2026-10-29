@@ -3,9 +3,12 @@ api_service/pipeline.py
 -----------------------
 Chaîne d'une question, pilotée par le code (voir documentation/ARCHITECTURE.md § 5).
 
-Découpage (PREP) → recherche structurée → génération SQL → si le modèle signale un manque :
-recherche complémentaire des mots manquants puis UNE nouvelle génération. Sans exécution
-(vérification et exécution : incrément suivant).
+translate : découpage (PREP) → recherche structurée → génération SQL → si le modèle signale un
+manque : recherche complémentaire des mots manquants puis UNE nouvelle génération.
+
+ask : translate, puis vérification (api_service/validate.py) → exécution en lecture seule
+(api_service/executor.py) → si erreur : le modèle SQL corrige avec l'erreur exacte (2 fois au plus)
+→ réponse construite par le code à partir des lignes (api_service/answer.py).
 """
 
 from __future__ import annotations
@@ -13,14 +16,21 @@ from __future__ import annotations
 import time
 from typing import Callable, Optional
 
+from api_service.answer import build_answer
 from api_service.llm import LLMClient
 from api_service.prep import structure_question
 from api_service.sqlgen import generate_sql
+from api_service.validate import validate_sql
 
 # schema_fn(account_id, question, structured) → réponse de POST /select/structured
 SchemaFn = Callable[[int, str, dict], dict]
 # extend_fn(account_id, question, structured, missing) → réponse de POST /select/extend
 ExtendFn = Callable[[int, str, dict, list], dict]
+
+# execute_fn(sql) → résultat de api_service.executor.execute
+ExecuteFn = Callable[[str], dict]
+
+MAX_CORRECTIONS = 2
 
 REFUSALS = {"write_request": "refused", "out_of_scope": "refused", "ambiguous": "clarification_needed"}
 
@@ -89,7 +99,7 @@ def translate(client: LLMClient, schema_fn: SchemaFn, question: str, account_id:
 
     # 3. Génération SQL
     out["attempts"] = []
-    gen = _generate(client, question, out, schema, reasoning, previous=None)
+    gen = _generate(client, question, out, schema, reasoning, previous=None, kind="generation")
     if gen["status"] != "missing" or extend_fn is None:
         return _finish(out, t0)
 
@@ -109,15 +119,72 @@ def translate(client: LLMClient, schema_fn: SchemaFn, question: str, account_id:
         out["reason"] = (f"Data not available: {', '.join(asked)}." if not extended.get("error")
                          else f"recherche complémentaire impossible : {extended['error']}")
         return _finish(out, t0)
-    gen = _generate(client, question, out, extended, reasoning, previous={"missing": asked})
+    gen = _generate(client, question, out, extended, reasoning, previous={"missing": asked}, kind="missing")
     if gen["status"] == "missing":
         out["status"] = "cannot_answer"
         out["reason"] = f"Data not available: {', '.join(gen['missing'])}."
     return _finish(out, t0)
 
 
+def ask(client: LLMClient, schema_fn: SchemaFn, execute_fn: ExecuteFn, question: str, account_id: int, *,
+        structured: Optional[dict] = None, reasoning: Optional[dict] = None,
+        extend_fn: Optional[ExtendFn] = None, max_corrections: int = MAX_CORRECTIONS) -> dict:
+    """
+    Question → réponse tirée de la base. Statut final : ok (answer rempli) ou celui de translate
+    (cannot_answer, refused, clarification_needed…), ou error si aucune requête valide n'a été obtenue.
+    """
+    reasoning = reasoning or {}
+    out = translate(client, schema_fn, question, account_id, structured=structured, reasoning=reasoning,
+                    extend_fn=extend_fn)
+    out["answer"], out["executed_sql"], out["checks"] = None, None, []
+    if out["status"] != "sql":
+        return out
+    t0 = time.time() - out["timings_ms"]["total"] / 1000
+    timings = out["timings_ms"]
+    schema = {"schema_ddl": out["schema_ddl"], "tables": [{"table_name": t} for t in out["tables_used"]],
+              "token_estimate": out["token_estimate"]}
+    corrections = 0
+    while True:
+        t = time.time()
+        check = validate_sql(out["sql"], out["schema_ddl"])
+        timings["validation"] = timings.get("validation", 0) + int((time.time() - t) * 1000)
+        step = {"sql": out["sql"], "valid": check["ok"], "error": check.get("error"),
+                "warning": check.get("warning")}
+        error = check.get("error")
+        if check["ok"]:
+            t = time.time()
+            result = execute_fn(check["sql"])
+            timings["execution"] = timings.get("execution", 0) + int((time.time() - t) * 1000)
+            step.update({"executed": result["ok"], "error": result.get("error"),
+                         "error_kind": result.get("error_kind"), "plan_cost": result.get("plan_cost"),
+                         "row_count": result.get("row_count"), "elapsed_ms": result.get("elapsed_ms")})
+            out["checks"].append(step)
+            if result["ok"]:
+                out["status"], out["executed_sql"] = "ok", check["sql"]
+                out["answer"] = build_answer(result)
+                return _finish(out, t0)
+            if result.get("error_kind") in ("config", "connection"):
+                out["status"], out["reason"] = "error", result["error"]
+                return _finish(out, t0)
+            error = result["error"]
+        else:
+            out["checks"].append(step)
+        if corrections >= max_corrections:
+            out["status"] = "error"
+            out["reason"] = f"No valid query after {corrections} corrections: {error}"
+            return _finish(out, t0)
+        corrections += 1
+        gen = _generate(client, question, out, schema, reasoning, previous={"sql": out["sql"], "error": error},
+                        kind="correction")
+        if gen["status"] != "sql":
+            if gen["status"] == "missing":
+                out["status"] = "cannot_answer"
+                out["reason"] = f"Data not available: {', '.join(gen['missing'])}."
+            return _finish(out, t0)
+
+
 def _generate(client: LLMClient, question: str, out: dict, schema: dict, reasoning: dict,
-              previous: Optional[dict]) -> dict:
+              previous: Optional[dict], kind: str = "generation") -> dict:
     """Un essai de génération : met à jour `out` (statut, SQL, schéma de cet essai, usage, essais)."""
     t = time.time()
     gen = generate_sql(client, question, out["structured_request"], schema["schema_ddl"],
@@ -129,7 +196,7 @@ def _generate(client: LLMClient, question: str, out: dict, schema: dict, reasoni
     out["usage"]["sql"] = _add_usage(out["usage"].get("sql"), usage)
     out["models"]["sql"] = usage["model"] or out["models"].get("sql")
     tables = [t["table_name"] for t in schema.get("tables", [])]
-    out["attempts"].append({"tables": tables, "token_estimate": schema.get("token_estimate"),
+    out["attempts"].append({"kind": kind, "tables": tables, "token_estimate": schema.get("token_estimate"),
                             "schema_ddl": schema["schema_ddl"], "status": gen["status"], "sql": gen["sql"],
                             "missing": gen["missing"], "reason": gen["reason"], "elapsed_ms": elapsed,
                             "cost_usd": usage["cost_usd"]})
