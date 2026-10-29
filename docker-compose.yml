@@ -1,24 +1,17 @@
-version: "3.9"
-
 # ══════════════════════════════════════════════════════════════════════════════
-#  NL2SQL v2 — docker-compose.yml
-#  Services GPU  : model_service, rewrite_service  → Dockerfile
-#  Services CPU  : schema_service, api_service     → Dockerfile.cpu
+#  AskYourData — docker-compose.yml
+#  Services : postgres_nl2sql (pgvector), schema_service, api_service
+#  Aucun GPU requis : les LLM sont appelés via API (voir documentation/ARCHITECTURE.md)
+#  GPU NVIDIA en option pour l'embedder :
+#    docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build
+#
+#  Prérequis : démarrer d'abord docker-compose.odoo.yml, qui crée le réseau nl2sql_net
 # ══════════════════════════════════════════════════════════════════════════════
 
-x-common: &common
-  image: nl2sql:latest
-  build:
-    context: .
-    dockerfile: Dockerfile
-    target: final
-  pull_policy: build
-  restart: unless-stopped
-  networks:
-    - nl2sql_net
-
+# Même Dockerfile pour les deux services, sans nom d'image commun : chaque service
+# reçoit sa propre étiquette (le second build réutilise le cache, il est quasi instantané).
+# Un nom d'image partagé fait échouer les builds parallèles (« image … already exists »).
 x-common-cpu: &common-cpu
-  image: nl2sql-cpu:latest
   build:
     context: .
     dockerfile: Dockerfile.cpu
@@ -28,10 +21,14 @@ x-common-cpu: &common-cpu
   networks:
     - nl2sql_net
 
+# Nom de projet explicite : les deux fichiers sont dans le même dossier ; sans nom distinct,
+# « --remove-orphans » sur l'un supprimerait les conteneurs de l'autre.
+name: askyourdata
+
 services:
 
   # ─────────────────────────────────────────────────────────────────────────
-  # PostgreSQL 16 + pgvector — BDD NL2SQL
+  # PostgreSQL 16 + pgvector — métadonnées et embeddings
   # ─────────────────────────────────────────────────────────────────────────
   postgres_nl2sql:
     image: pgvector/pgvector:pg16
@@ -48,7 +45,8 @@ services:
       PGDATA:            /var/lib/postgresql/data/pgdata
     volumes:
       - postgres_nl2sql_data:/var/lib/postgresql/data
-      - ./postgres/init:/docker-entrypoint-initdb.d
+      # Scripts exécutés uniquement à la création du volume
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U nl2sql -d nl2sql"]
       interval: 10s
@@ -57,82 +55,7 @@ services:
       start_period: 30s
 
   # ─────────────────────────────────────────────────────────────────────────
-  # model_service — SQLCoder 7B-2 (GPU ~7 Go)
-  # ─────────────────────────────────────────────────────────────────────────
-  model_service:
-    <<: *common
-    container_name: sqlcoder_model
-    command: python3 -m model_service.server
-    ports:
-      - "8001:8001"
-    volumes:
-      - ./models/sqlcoder-7b-2:/app/models/sqlcoder-7b-2:ro
-    environment:
-      MODEL_PATH: /app/models/sqlcoder-7b-2
-      TRANSFORMERS_OFFLINE: "1"
-      HF_DATASETS_OFFLINE: "1"
-      DEVICE: cuda
-      MAX_NEW_TOKENS: "512"
-      TEMPERATURE: "0.1"
-      OMP_NUM_THREADS: "16"
-      MKL_NUM_THREADS: "16"
-      TOKENIZERS_PARALLELISM: "false"
-      CUDA_VISIBLE_DEVICES: "0"
-      PYTORCH_CUDA_ALLOC_CONF: "max_split_size_mb:256,expandable_segments:True"
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
-        limits:
-          memory: 14G
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
-      interval: 10s
-      timeout: 10s
-      retries: 10
-      start_period: 180s
-
-  # ─────────────────────────────────────────────────────────────────────────
-  # rewrite_service — Qwen2.5 3B (GPU ~3 Go)
-  # ─────────────────────────────────────────────────────────────────────────
-  rewrite_service:
-    <<: *common
-    container_name: nl2sql_rewrite
-    command: python3 -m rewrite_service.server
-    ports:
-      - "8003:8003"
-    volumes:
-      - ./models/qwen2.5-3b-instruct:/app/models/qwen2.5-3b-instruct:ro
-    environment:
-      REWRITE_MODEL_PATH: /app/models/qwen2.5-3b-instruct
-      TRANSFORMERS_OFFLINE: "1"
-      HF_DATASETS_OFFLINE: "1"
-      DEVICE: cuda
-      REWRITE_MAX_NEW_TOKENS: "256"
-      OMP_NUM_THREADS: "16"
-      TOKENIZERS_PARALLELISM: "false"
-      CUDA_VISIBLE_DEVICES: "0"
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
-        limits:
-          memory: 6G
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8003/health"]
-      interval: 10s
-      timeout: 10s
-      retries: 10
-      start_period: 120s
-
-  # ─────────────────────────────────────────────────────────────────────────
-  # schema_service — all-MiniLM + pgvector (CPU)
+  # schema_service — indexation + recherche de schéma (embedder local, CPU ou GPU)
   # ─────────────────────────────────────────────────────────────────────────
   schema_service:
     <<: *common-cpu
@@ -141,69 +64,78 @@ services:
     ports:
       - "8002:8002"
     volumes:
-      - ./models/all-MiniLM-L6-v2:/app/models/all-MiniLM-L6-v2:ro
+      # Tous les modèles locaux : le modèle utilisé est choisi par EMBEDDER_MODEL_PATH
+      - ./models:/app/models:ro
+      # Filtres d'indexation modifiables sans reconstruire l'image
+      - ./config:/app/config:ro
     environment:
-      MINILM_MODEL_PATH:   /app/models/all-MiniLM-L6-v2
+      # Embedder (voir schema_service/embedder.py) : changer de modèle impose de relancer /index
+      EMBEDDER_MODEL_PATH: /app/models/${EMBEDDER_MODEL:-all-MiniLM-L6-v2}
+      EMBEDDER_DEVICE:     ${EMBEDDER_DEVICE:-cpu}
+      EMBEDDER_DIM:        ${EMBEDDER_DIM:-}
+      INDEX_FILTERS_PATH:  /app/config/index_filters.yaml
       NL2SQL_DB_HOST:      postgres_nl2sql
       NL2SQL_DB_PORT:      "5432"
       NL2SQL_DB_NAME:      nl2sql
       NL2SQL_DB_USER:      nl2sql
       NL2SQL_DB_PASSWORD:  ${NL2SQL_DB_PASSWORD:-nl2sql}
+      # Base source du compte par défaut (id=1), synchronisée au démarrage
+      SOURCE_DB_HOST:      ${SOURCE_DB_HOST:-postgres_odoo}
+      SOURCE_DB_PORT:      ${SOURCE_DB_PORT:-5432}
+      SOURCE_DB_NAME:      ${SOURCE_DB_NAME:-odoo}
+      SOURCE_DB_USER:      ${SOURCE_DB_USER:-odoo}
+      SOURCE_DB_SCHEMA:    ${SOURCE_DB_SCHEMA:-public}
       SOURCE_DB_PASSWORD:  ${ODOO_DB_PASSWORD:-odoo}
-      TOP_K_TABLES:        "10"
-      TOP_K_COLUMNS:       "20"
+      SEARCH_SYNONYMS_PATH: /app/config/search_synonyms.yaml
+      SEARCH_SEED_TABLES:  "5"
+      SEARCH_MAX_TABLES:   "10"
+      SEARCH_MAX_COLUMNS:  "15"
+      SCHEMA_TOKEN_BUDGET: "3000"
       OMP_NUM_THREADS:     "8"
       TOKENIZERS_PARALLELISM: "false"
-      CUDA_VISIBLE_DEVICES: ""
     depends_on:
       postgres_nl2sql:
         condition: service_healthy
     deploy:
       resources:
         limits:
-          memory: 2G
+          # MiniLM tient dans 1 Go ; Qwen3-Embedding-0.6B sur CPU demande ~4 Go
+          memory: ${SCHEMA_SERVICE_MEMORY:-4G}
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
       interval: 10s
       timeout: 10s
       retries: 5
-      start_period: 30s
+      start_period: 60s
 
   # ─────────────────────────────────────────────────────────────────────────
-  # api_service — Orchestrateur public (CPU)
+  # api_service — orchestrateur public (CPU)
   # ─────────────────────────────────────────────────────────────────────────
   api_service:
     <<: *common-cpu
-    container_name: sqlcoder_api
+    container_name: askyourdata_api
     command: >
       gunicorn
         --bind 0.0.0.0:5000
         --workers 4
         --threads 4
-        --timeout 120
+        --timeout 180
         --worker-class gthread
         api_service.app:app
     ports:
       - "5000:5000"
     environment:
-      MODEL_SERVICE_URL:   http://model_service:8001
-      REWRITE_SERVICE_URL: http://rewrite_service:8003
       SCHEMA_SERVICE_URL:  http://schema_service:8002
       NL2SQL_DB_HOST:      postgres_nl2sql
       NL2SQL_DB_PORT:      "5432"
       NL2SQL_DB_NAME:      nl2sql
       NL2SQL_DB_USER:      nl2sql
       NL2SQL_DB_PASSWORD:  ${NL2SQL_DB_PASSWORD:-nl2sql}
-      FLASK_ENV:           production
       SECRET_KEY:          ${SECRET_KEY:-changeme_in_production}
       OMP_NUM_THREADS:     "4"
       CUDA_VISIBLE_DEVICES: ""
       TOKENIZERS_PARALLELISM: "false"
     depends_on:
-      model_service:
-        condition: service_healthy
-      rewrite_service:
-        condition: service_healthy
       schema_service:
         condition: service_healthy
     deploy:
@@ -218,4 +150,4 @@ volumes:
 networks:
   nl2sql_net:
     name: nl2sql_net
-    driver: bridge
+    external: true

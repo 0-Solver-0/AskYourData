@@ -1,0 +1,86 @@
+# Questions jamais testées, forme courte (mêmes règles que structured_questions.yaml)
+# Lancer : python benchmark/schema_search_eval.py --file benchmark/unseen_questions.yaml --verbose
+
+- question: "Average order value per sales team this year"
+  structured:
+    subject: "sales orders"
+    measures: ["total amount"]
+    filters: ["status"]
+    group_by: ["sales team"]
+    period: "order date"
+  expected: [sale_order, crm_team]
+
+- question: "Quotations sent but not yet confirmed"
+  structured:
+    subject: "quotations"
+    measures: ["total amount"]
+    filters: ["status"]
+  expected: [sale_order]
+
+- question: "Overdue vendor bills by vendor"
+  structured:
+    subject: "vendor bills"
+    measures: ["amount due"]
+    filters: ["document type", "status", "payment status"]
+    group_by: ["vendor"]
+    period: "due date"
+  expected: [account_move, res_partner]
+
+- question: "Payments received last month by journal"
+  structured:
+    subject: "payments"
+    measures: ["amount"]
+    filters: ["payment type"]
+    group_by: ["journal"]
+    period: "payment date"
+  expected: [account_payment, account_journal]
+
+- question: "Purchase orders not yet fully received"
+  structured:
+    subject: "purchase orders"
+    measures: []
+    filters: ["status", "receipt status"]
+    group_by: ["vendor"]
+  expected: [purchase_order, res_partner]
+
+- question: "Stock value by product category"
+  structured:
+    subject: "stock valuation"
+    measures: ["value"]
+    group_by: ["product category"]
+  expected: [[stock_quant, stock_valuation_layer], [product_category, product_template]]
+
+- question: "Late receipts from vendors"
+  structured:
+    subject: "incoming shipments from vendors"
+    measures: []
+    filters: ["operation type", "status"]
+    group_by: ["vendor"]
+    period: "scheduled date"
+  expected: [stock_picking, stock_picking_type]
+
+- question: "Leads created this month by source"
+  structured:
+    subject: "CRM leads"
+    measures: []
+    group_by: ["source"]
+    period: "creation date"
+  expected: [crm_lead]
+
+- question: "Employees by job position and manager"
+  structured:
+    subject: "employees"
+    measures: []
+    filters: ["active"]
+    group_by: ["job position", "manager"]
+  expected: [hr_employee, hr_job]
+
+- question: "Top 10 products by sales revenue this year"
+  structured:
+    subject: "sales order lines"
+    measures: ["amount without tax"]
+    filters: ["order status"]
+    group_by: ["product"]
+    period: "order date"
+    order: "revenue desc, top 10"
+  expected: [sale_order_line, [product_product, product_template]]

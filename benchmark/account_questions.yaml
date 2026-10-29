@@ -1,0 +1,14 @@
+# ══════════════════════════════════════════════════════════════════════════════
+#  Questions « nouvelles » sur le module account (facturation, comptabilité)
+#  À écrire AVANT de voir l'enrichissement : elles servent à vérifier que les
+#  descriptions aident en général, et pas seulement les 12 questions de réglage.
+#
+#  Lancer : python benchmark/schema_search_eval.py --file benchmark/account_questions.yaml
+#
+#  expected : tables qui DOIVENT être envoyées au modèle SQL
+#    - un nom    : table obligatoire
+#    - une liste : au moins une des tables (alternatives équivalentes)
+# ══════════════════════════════════════════════════════════════════════════════
+
+# - question: "..."
+#   expected: [account_move, res_partner]

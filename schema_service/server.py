@@ -1,31 +1,42 @@
 """
 schema_service/server.py
 ------------------------
-Agent 2 — Identifier les tables
-Agent 3 — Identifier les colonnes
-Agent 4 — Identifier les relations
-
-Utilise all-MiniLM-L6-v2 pour les embeddings et pgvector pour la recherche.
+Indexation du schéma de la base source et recherche des tables, colonnes et
+relations utiles à une question (embedder local + pgvector).
 
 Endpoints :
   GET  /health                  — état du service
-  POST /index                   — indexe toutes les tables d'un compte
-  POST /select                  — pipeline complet : tables → colonnes → relations → DDL minimal
-  POST /annotate/table          — annoter une table
-  POST /annotate/column         — annoter une colonne
-  POST /reindex                 — recalcule l'embedding d'une table
+  POST /index                   — indexe les tables d'un compte (filtrage, métadonnées Odoo, embeddings)
+  GET  /index/report            — tables retenues et exclues (avec raison) pour relecture
+  POST /select                  — question → tables (recherche, jointures, références) → schéma compact
+  POST /select/structured       — question découpée (sujet, mesures, filtres…) → schéma minimal
+  POST /annotate/table          — annoter une table (prioritaire sur l'automatique)
+  POST /annotate/column         — annoter une colonne (prioritaire sur l'automatique)
+  POST /reindex                 — recalcule les embeddings d'une table et de ses colonnes
+  GET  /accounts                — comptes (bases sources) connus
+  GET  /modules                 — modules Odoo de l'index
+  GET  /export                  — fichier d'enrichissement d'un module (JSON)
+  POST /import                  — applique un fichier d'enrichissement, réencode les tables modifiées
 """
 
+import logging
 import os
 import sys
-import logging
 import time
 
 import psycopg2
 import psycopg2.extras
+from flask import Flask, jsonify, request
 from pgvector.psycopg2 import register_vector
-from sentence_transformers import SentenceTransformer
-from flask import Flask, request, jsonify
+
+from . import search, structured
+from .accounts import default_account_from_env, sync_default_account
+from .embedder import Embedder, EmbedderConfig
+from .enrichment import export_schema, import_enrichment, list_modules
+from .filters import load_filter_config
+from .indexer import index_account, index_report, reindex_table_embeddings
+from .search_data import column_similarities, load_search_data, vector_ranking
+from .vector_space import ensure_vector_space, missing_embeddings
 
 # ── Logging ────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -37,7 +48,6 @@ logging.basicConfig(
 logger = logging.getLogger("schema_service")
 
 # ── Config ─────────────────────────────────────────────────────────────────
-MODEL_PATH   = os.getenv("MINILM_MODEL_PATH", "/app/models/all-MiniLM-L6-v2")
 NL2SQL_DB    = {
     "host":     os.getenv("NL2SQL_DB_HOST",     "postgres_nl2sql"),
     "port":     int(os.getenv("NL2SQL_DB_PORT",  "5432")),
@@ -45,21 +55,24 @@ NL2SQL_DB    = {
     "user":     os.getenv("NL2SQL_DB_USER",      "nl2sql"),
     "password": os.getenv("NL2SQL_DB_PASSWORD",  "nl2sql"),
 }
-TOP_K_TABLES  = int(os.getenv("TOP_K_TABLES",  "10"))
-TOP_K_COLUMNS = int(os.getenv("TOP_K_COLUMNS", "20"))
+SCHEMA_SQL    = os.path.join(os.path.dirname(__file__), "schema.sql")
 
-app     = Flask(__name__)
-embedder = None
+app      = Flask(__name__)
+app.json.sort_keys = False   # garder l'ordre des champs (fichiers d'enrichissement lisibles)
+embedder: Embedder = None
+vector_state: dict = {}
 
 
-# ── Chargement embedder ────────────────────────────────────────────────────
+# ── Embedder ───────────────────────────────────────────────────────────────
 def load_embedder():
+    """Modèle, dimension, appareil et consignes : voir schema_service/embedder.py (EMBEDDER_*)."""
     global embedder
-    logger.info("⏳ Chargement all-MiniLM-L6-v2…")
-    embedder = SentenceTransformer(MODEL_PATH)
-    logger.info("✅ Embedder OK")
+    embedder = Embedder(EmbedderConfig.from_env()).load()
 
-load_embedder()
+
+def embed(texts: list[str]) -> list[list[float]]:
+    """Textes indexés (tables, colonnes) : sans consigne."""
+    return embedder.embed_documents(texts)
 
 
 # ── DB helpers ─────────────────────────────────────────────────────────────
@@ -67,6 +80,26 @@ def get_conn():
     conn = psycopg2.connect(**NL2SQL_DB)
     register_vector(conn)
     return conn
+
+
+def ensure_schema(retries: int = 10, delay_s: float = 3.0) -> None:
+    """Applique schema_service/schema.sql (idempotent) : crée ou met à niveau la base NL2SQL."""
+    with open(SCHEMA_SQL, encoding="utf-8") as fh:
+        ddl = fh.read()
+    for attempt in range(1, retries + 1):
+        try:
+            conn = psycopg2.connect(**NL2SQL_DB)
+            with conn.cursor() as cur:
+                cur.execute(ddl)
+            conn.commit()
+            conn.close()
+            logger.info("✅ Schéma NL2SQL à jour")
+            return
+        except psycopg2.OperationalError as exc:
+            logger.warning("Base NL2SQL indisponible (essai %d/%d) : %s", attempt, retries, exc)
+            time.sleep(delay_s)
+    raise RuntimeError("Impossible d'appliquer le schéma NL2SQL")
+
 
 def get_account(conn, account_id: int) -> dict:
     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
@@ -76,8 +109,9 @@ def get_account(conn, account_id: int) -> dict:
             raise ValueError(f"Compte {account_id} introuvable")
         return dict(row)
 
+
 def get_source_conn(account: dict):
-    """Connexion vers la BDD source (ex: Odoo)."""
+    """Connexion vers la base source (ex. Odoo)."""
     return psycopg2.connect(
         host=account["pg_host"],
         port=account["pg_port"],
@@ -87,215 +121,13 @@ def get_source_conn(account: dict):
     )
 
 
-# ── Construction du texte d'embedding ─────────────────────────────────────
-def build_embedding_text(table: dict, columns: list, relations: list) -> str:
-    """
-    Fusionne table + colonnes + relations en un seul texte
-    pour maximiser la précision de la recherche sémantique.
-    """
-    parts = []
-
-    # Table
-    parts.append(table["table_name"])
-    if table.get("label"):
-        parts.append(table["label"])
-    if table.get("synonyms"):
-        parts.append(table["synonyms"])
-    if table.get("domain"):
-        parts.append(table["domain"])
-    if table.get("description"):
-        parts.append(table["description"])
-
-    # Colonnes
-    col_parts = []
-    for col in columns:
-        col_text = f"{col['column_name']} {col.get('data_type', '')}"
-        extras = []
-        if col.get("label"):
-            extras.append(col["label"])
-        if col.get("synonyms"):
-            extras.append(col["synonyms"])
-        if extras:
-            col_text += f" ({', '.join(extras)})"
-        col_parts.append(col_text)
-    if col_parts:
-        parts.append(" | ".join(col_parts))
-
-    # Relations
-    for rel in relations:
-        if rel.get("label"):
-            parts.append(rel["label"])
-
-    return " | ".join(parts)
-
-
-# ── Agent 2 — Sélection tables ─────────────────────────────────────────────
-def select_tables(conn, question: str, account_id: int) -> list:
-    """Recherche sémantique des tables les plus pertinentes."""
-    q_vector = embedder.encode(question).tolist()
-    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-        cur.execute("""
-            SELECT
-                id,
-                table_name,
-                schema_name,
-                ddl,
-                label,
-                synonyms,
-                domain,
-                1 - (embedding <=> %s::vector) AS similarity
-            FROM nl2sql_tables
-            WHERE account_id = %s
-              AND embedding IS NOT NULL
-            ORDER BY embedding <=> %s::vector
-            LIMIT %s
-        """, (q_vector, account_id, q_vector, TOP_K_TABLES))
-        return [dict(r) for r in cur.fetchall()]
-
-
-# ── Agent 3 — Sélection colonnes ───────────────────────────────────────────
-def select_columns(conn, question: str, table_ids: list) -> dict:
-    """
-    Pour chaque table sélectionnée, retourne les colonnes pertinentes.
-    Garde toujours : PK, FK, et colonnes sémantiquement proches.
-    """
-    if not table_ids:
-        return {}
-
-    q_vector = embedder.encode(question).tolist()
-
-    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-        # Récupère toutes les colonnes des tables sélectionnées
-        cur.execute("""
-            SELECT
-                c.id,
-                c.table_id,
-                c.column_name,
-                c.data_type,
-                c.is_pk,
-                c.is_fk,
-                c.is_nullable,
-                c.label,
-                c.synonyms,
-                c.display
-            FROM nl2sql_columns c
-            WHERE c.table_id = ANY(%s)
-            ORDER BY c.table_id, c.is_pk DESC, c.is_fk DESC
-        """, (table_ids,))
-        all_cols = [dict(r) for r in cur.fetchall()]
-
-    # Grouper par table
-    by_table = {}
-    for col in all_cols:
-        tid = col["table_id"]
-        by_table.setdefault(tid, []).append(col)
-
-    # Pour chaque table : garder PK/FK + colonnes pertinentes via similarité texte
-    result = {}
-    for tid, cols in by_table.items():
-        selected = []
-        for col in cols:
-            # Toujours garder PK et FK (nécessaires pour les jointures)
-            if col["is_pk"] or col["is_fk"]:
-                selected.append(col)
-                continue
-            # Similarité sémantique via texte colonne
-            col_text = f"{col['column_name']} {col.get('label', '')} {col.get('synonyms', '')}"
-            col_vec  = embedder.encode(col_text).tolist()
-            q_vec    = embedder.encode(question).tolist()
-            # Produit scalaire simplifié
-            similarity = sum(a * b for a, b in zip(q_vec, col_vec))
-            col["_similarity"] = similarity
-            selected.append(col)
-
-        # Trier par pertinence, garder les TOP_K_COLUMNS
-        selected = sorted(selected, key=lambda c: (
-            c.get("is_pk", False),
-            c.get("is_fk", False),
-            c.get("_similarity", 0)
-        ), reverse=True)[:TOP_K_COLUMNS]
-
-        result[tid] = selected
-
-    return result
-
-
-# ── Agent 4 — Sélection relations ─────────────────────────────────────────
-def select_relations(conn, account_id: int, table_names: list) -> list:
-    """Retourne les relations entre les tables sélectionnées."""
-    if not table_names:
-        return []
-    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-        cur.execute("""
-            SELECT from_table, from_column, to_table, to_column, label, join_hint
-            FROM nl2sql_relations
-            WHERE account_id = %s
-              AND from_table = ANY(%s)
-              AND to_table   = ANY(%s)
-        """, (account_id, table_names, table_names))
-        return [dict(r) for r in cur.fetchall()]
-
-
-# ── Assembleur de DDL minimal ──────────────────────────────────────────────
-def build_minimal_ddl(tables: list, columns_by_table: dict, relations: list) -> str:
-    """
-    Construit un DDL minimal avec uniquement les tables, colonnes
-    et relations identifiées par les 3 agents.
-    """
-    ddl_parts = []
-
-    for table in tables:
-        tid  = table["id"]
-        cols = columns_by_table.get(tid, [])
-
-        lines = [f"CREATE TABLE {table['table_name']} ("]
-        col_lines = []
-        for col in cols:
-            line = f"    {col['column_name']} {col['data_type']}"
-            if col.get("is_pk"):
-                line += " PRIMARY KEY"
-            if not col.get("is_nullable", True):
-                line += " NOT NULL"
-            # Ajouter commentaire métier si annoté
-            if col.get("label"):
-                line += f"  -- {col['label']}"
-                if col.get("synonyms"):
-                    line += f" ({col['synonyms']})"
-            col_lines.append(line)
-
-        # Ajouter FK depuis les relations
-        for rel in relations:
-            if rel["from_table"] == table["table_name"]:
-                fk = (f"    FOREIGN KEY ({rel['from_column']}) "
-                      f"REFERENCES {rel['to_table']}({rel['to_column']})")
-                col_lines.append(fk)
-
-        lines.append(",\n".join(col_lines))
-        lines.append(");")
-        ddl_parts.append("\n".join(lines))
-
-    return "\n\n".join(ddl_parts)
-
-
-# ── Colonnes à afficher ────────────────────────────────────────────────────
-def get_display_columns(columns_by_table: dict) -> list:
-    """
-    Retourne la liste des colonnes à afficher dans les résultats.
-    Exclut les colonnes techniques (id, created_at, etc.) sauf si annotées display=True.
-    """
-    TECHNICAL = {"id", "create_date", "write_date", "create_uid", "write_uid",
-                 "created_at", "updated_at", "deleted_at", "__last_update"}
-    display = []
-    for cols in columns_by_table.values():
-        for col in cols:
-            name = col["column_name"].lower()
-            # Afficher si : explicitement marqué display=True
-            # ou si ce n'est pas une colonne technique et pas une PK sans label
-            if col.get("display") is True:
-                display.append(col["column_name"])
-            elif name not in TECHNICAL and not (col.get("is_pk") and not col.get("label")):
-                display.append(col["column_name"])
-    return display
+def plan_params() -> search.PlanParams:
+    return search.PlanParams(
+        seed_tables=int(os.getenv("SEARCH_SEED_TABLES", "5")),
+        max_tables=int(os.getenv("SEARCH_MAX_TABLES", "10")),
+        max_columns=int(os.getenv("SEARCH_MAX_COLUMNS", "15")),
+        token_budget=int(os.getenv("SCHEMA_TOKEN_BUDGET", "3000")),
+    )
 
 
 # ── Endpoints ──────────────────────────────────────────────────────────────
@@ -306,37 +138,41 @@ def health():
         conn = get_conn()
         conn.close()
         db_ok = True
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         db_ok = str(e)
 
+    reindex_required = None
+    if db_ok is True:
+        try:
+            conn = get_conn()
+            reindex_required = missing_embeddings(conn) > 0
+            conn.close()
+        except Exception:  # noqa: BLE001
+            pass
+
     return jsonify({
-        "status":       "ok" if db_ok is True else "error",
-        "embedder":     "ok",
-        "model_path":   MODEL_PATH,
-        "db_connected": db_ok,
+        "status":           "ok" if db_ok is True and embedder is not None else "error",
+        "embedder":         embedder.info() if embedder is not None else "not_loaded",
+        "reindex_required": reindex_required,
+        "vector_space":     vector_state,
+        "db_connected":     db_ok,
     }), 200 if db_ok is True else 500
 
 
 @app.post("/select")
 def select():
     """
-    Pipeline complet : tables → colonnes → relations → DDL minimal
+    Question → tables et colonnes utiles → schéma compact.
 
-    Body : {
-      "question":   "What is the average order value per customer?",
-      "account_id": 1
-    }
-    Retourne : {
-      "tables":          [...],
-      "columns_display": [...],
-      "schema_ddl":      "CREATE TABLE ...",
-      "relations":       [...],
-      "elapsed_s":       0.05
-    }
+    Body : {"question": "...", "account_id": 1, "debug": false}
+    Retourne : {"tables", "columns_display", "schema_ddl", "relations", "token_estimate", "elapsed_s"}
+      tables : [{table_name, reason (search | join:a↔b | lookup:table.colonne), score, …}]
+      debug  : true → ajoute le détail des scores, des colonnes gardées et le classement
     """
     data       = request.get_json(silent=True) or {}
     question   = data.get("question", "").strip()
     account_id = data.get("account_id")
+    debug      = bool(data.get("debug", False))
 
     if not question:
         return jsonify({"error": "'question' obligatoire"}), 400
@@ -344,56 +180,163 @@ def select():
         return jsonify({"error": "'account_id' obligatoire"}), 400
 
     try:
-        t0   = time.time()
+        t0       = time.time()
+        params   = plan_params()
+        query    = search.build_query(question, search.load_synonyms())
+        q_vector = embedder.embed_query(query.expanded_text(), "tables")   # question + synonymes
+
         conn = get_conn()
+        try:
+            candidates, tables_by_name, columns_by_table, relations, values = \
+                load_search_data(conn, account_id, q_vector)
+            if not candidates:
+                return jsonify({"error": "Aucune table indexée — lancez /index d'abord"}), 404
+            vec_ranking = None
+            if debug:
+                # Mesure : la question telle quelle, comparée aux seuls vecteurs des tables
+                vec_ranking = vector_ranking(conn, account_id, embedder.embed_query(question, "tables"))
+        finally:
+            conn.close()
 
-        # Agent 2 — tables
-        tables = select_tables(conn, question, account_id)
-        if not tables:
-            return jsonify({"error": "Aucune table trouvée — lancez /index d'abord"}), 404
-
-        table_ids   = [t["id"]         for t in tables]
-        table_names = [t["table_name"] for t in tables]
-
-        # Agent 3 — colonnes
-        columns_by_table = select_columns(conn, question, table_ids)
-
-        # Agent 4 — relations
-        relations = select_relations(conn, account_id, table_names)
-
-        # Assemblage DDL minimal
-        schema_ddl = build_minimal_ddl(tables, columns_by_table, relations)
-
-        # Colonnes à afficher
-        display_columns = get_display_columns(columns_by_table)
-
-        conn.close()
+        value_matches = search.match_values(question, values)
+        plan = search.plan_schema(query, candidates, tables_by_name, columns_by_table, relations, params,
+                                  value_matches)
         elapsed = round(time.time() - t0, 3)
+        logger.info("✅ Select en %ss | %d tables | ~%d tokens",
+                    elapsed, len(plan["tables"]), plan["token_estimate"])
 
-        logger.info("✅ Select en %ss | %d tables | %d relations",
-                    elapsed, len(tables), len(relations))
+        response = {
+            "tables": [{"table_name": t["table_name"], "reason": t["reason"], "score": t["score"]}
+                       for t in plan["tables"]],
+            "columns_display": [f"{t['table_name']}.{c['column_name']}"
+                                for t in plan["tables"] for c in t["columns"]
+                                if c["reason"] not in ("primary_key", "join")],
+            "schema_ddl": plan["schema_ddl"],
+            "relations": plan["relations"],
+            "token_estimate": plan["token_estimate"],
+            "elapsed_s": elapsed,
+        }
+        if debug:
+            response["debug"] = {
+                "query_terms": {t: sorted(v) for t, v in query.expansions.items()},
+                "encoded_text": query.expanded_text(),
+                "embedder": embedder.cfg.model_id,
+                "tables": plan["tables"],
+                "ranking": plan["ranking"],
+                "vector_ranking": vec_ranking,
+                "value_matches": plan["value_matches"],
+            }
+        return jsonify(response)
 
-        return jsonify({
-            "tables":          [{"table_name": t["table_name"],
-                                 "similarity": round(t["similarity"], 3)}
-                                for t in tables],
-            "columns_display": display_columns,
-            "schema_ddl":      schema_ddl,
-            "relations":       relations,
-            "elapsed_s":       elapsed,
-        })
-
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         logger.exception("Erreur /select")
+        return jsonify({"error": str(exc)}), 500
+
+
+def structured_params() -> structured.StructuredParams:
+    return structured.StructuredParams(
+        candidate_tables=int(os.getenv("STRUCTURED_CANDIDATE_TABLES", "6")),
+        subject_tables=int(os.getenv("STRUCTURED_SUBJECT_TABLES", "1")),
+        matches_per_piece=int(os.getenv("STRUCTURED_MATCHES_PER_PIECE", "2")),
+        subject_margin=float(os.getenv("STRUCTURED_SUBJECT_MARGIN", "0.06")),
+        check_types=os.getenv("STRUCTURED_CHECK_TYPES", "true").lower() not in ("0", "false", "no"),
+        min_similarity=float(os.getenv("STRUCTURED_MIN_SIMILARITY", "0.6")),
+        table_piece_min=float(os.getenv("STRUCTURED_TABLE_PIECE_MIN", "0.6")),
+        token_budget=int(os.getenv("SCHEMA_TOKEN_BUDGET", "3000")),
+    )
+
+
+@app.post("/select/structured")
+def select_structured():
+    """
+    Question découpée en morceaux de sens → tables et colonnes → schéma minimal.
+    Body : {"account_id": 1, "question": "… (facultatif)", "debug": false,
+            "structured": {"subject": "...", "measures": [...], "filters": [...],
+                           "group_by": [...], "period": "...", "order": "..."}}
+    Le sujet est cherché parmi les fiches de tables (consigne « tables »), chaque autre morceau
+    parmi les colonnes des tables candidates (consigne « columns »).
+    """
+    data       = request.get_json(silent=True) or {}
+    account_id = data.get("account_id")
+    question   = (data.get("question") or "").strip()
+    debug      = bool(data.get("debug", False))
+    if not account_id:
+        return jsonify({"error": "'account_id' obligatoire"}), 400
+    try:
+        sq = structured.StructuredQuestion.from_dict(data.get("structured"))
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    try:
+        t0     = time.time()
+        params = structured_params()
+        pieces = sq.pieces()
+        subject_vec = embedder.embed_query(sq.subject, "tables")
+        piece_vecs  = embedder.embed_queries([text for _, text in pieces], "columns")
+        # Regroupements comparés aussi aux fiches de tables (« product category » → product_category)
+        group_idx = [i for i, (role, _) in enumerate(pieces) if role == "group_by"]
+        group_vecs = embedder.embed_queries([pieces[i][1] for i in group_idx], "tables") if group_idx else []
+
+        conn = get_conn()
+        try:
+            candidates, tables_by_name, columns_by_table, relations, values = \
+                load_search_data(conn, account_id, subject_vec)
+            if not candidates:
+                return jsonify({"error": "Aucune table indexée — lancez /index d'abord"}), 404
+            table_sims = {c.table_name: c.vector_score for c in candidates}
+            names = sorted(table_sims, key=table_sims.get, reverse=True)[:params.candidate_tables]
+            column_sims = column_similarities(conn, account_id, names, piece_vecs)
+            piece_table_sims: list[dict[str, float]] = [{} for _ in pieces]
+            for i, vec in zip(group_idx, group_vecs):
+                piece_table_sims[i] = {r["table_name"]: r["similarity"]
+                                       for r in vector_ranking(conn, account_id, vec, limit=5)}
+        finally:
+            conn.close()
+
+        value_text = question or " ".join([sq.subject, *sq.filters])
+        value_matches = search.match_values(value_text, values)
+        plan = structured.plan_structured(sq, table_sims, column_sims, tables_by_name, columns_by_table,
+                                          relations, params, value_matches, piece_table_sims)
+        elapsed = round(time.time() - t0, 3)
+        logger.info("✅ Select structuré en %ss | %d tables | ~%d tokens",
+                    elapsed, len(plan["tables"]), plan["token_estimate"])
+
+        response = {
+            "tables": [{"table_name": t["table_name"], "reason": t["reason"]} for t in plan["tables"]],
+            "columns_display": [f"{t['table_name']}.{c['column_name']}" for t in plan["tables"]
+                                for c in t["columns"] if c["reason"] not in ("primary_key", "join")],
+            "schema_ddl": plan["schema_ddl"],
+            "relations": plan["relations"],
+            "token_estimate": plan["token_estimate"],
+            "elapsed_s": elapsed,
+        }
+        if debug:
+            response["debug"] = {
+                "embedder": embedder.cfg.model_id,
+                "structured": sq.__dict__,
+                "subject_ranking": plan["subject_ranking"],
+                "pieces": plan["pieces"],
+                "tables": plan["tables"],
+                "value_matches": plan["value_matches"],
+                "value_matches_ignored": plan["value_matches_ignored"],
+            }
+        return jsonify(response)
+
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Erreur /select/structured")
         return jsonify({"error": str(exc)}), 500
 
 
 @app.post("/index")
 def index():
     """
-    Indexe toutes les tables de la BDD source d'un compte.
+    Indexe les tables de la base source d'un compte.
 
-    Body : { "account_id": 1 }
+    Body : {
+      "account_id": 1,
+      "dry_run":    false,   // true : calcule seulement les tables retenues/exclues, sans rien écrire
+      "embeddings": true     // false : structure seulement (plus rapide), embeddings plus tard via /reindex
+    }
     """
     data       = request.get_json(silent=True) or {}
     account_id = data.get("account_id")
@@ -401,180 +344,139 @@ def index():
         return jsonify({"error": "'account_id' obligatoire"}), 400
 
     try:
-        t0      = time.time()
+        cfg     = load_filter_config()
         conn    = get_conn()
         account = get_account(conn, account_id)
         src     = get_source_conn(account)
+        try:
+            report = index_account(
+                conn, src, account,
+                embed=embed if data.get("embeddings", True) else None,
+                cfg=cfg,
+                dry_run=bool(data.get("dry_run", False)),
+            )
+        finally:
+            src.close()
+            conn.close()
+        return jsonify(report)
 
-        schema = account.get("pg_schema", "public")
-
-        # Récupérer toutes les tables de la BDD source
-        with src.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute("""
-                SELECT table_name
-                FROM information_schema.tables
-                WHERE table_schema = %s
-                  AND table_type   = 'BASE TABLE'
-                ORDER BY table_name
-            """, (schema,))
-            source_tables = [r["table_name"] for r in cur.fetchall()]
-
-        indexed = 0
-        for table_name in source_tables:
-            try:
-                # DDL simplifié depuis information_schema
-                with src.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-                    cur.execute("""
-                        SELECT column_name, data_type, is_nullable
-                        FROM information_schema.columns
-                        WHERE table_schema = %s AND table_name = %s
-                        ORDER BY ordinal_position
-                    """, (schema, table_name))
-                    cols = cur.fetchall()
-
-                    # PK
-                    cur.execute("""
-                        SELECT kcu.column_name
-                        FROM information_schema.table_constraints tc
-                        JOIN information_schema.key_column_usage kcu
-                          ON tc.constraint_name = kcu.constraint_name
-                        WHERE tc.table_schema = %s
-                          AND tc.table_name   = %s
-                          AND tc.constraint_type = 'PRIMARY KEY'
-                    """, (schema, table_name))
-                    pk_cols = {r["column_name"] for r in cur.fetchall()}
-
-                    # FK
-                    cur.execute("""
-                        SELECT kcu.column_name,
-                               ccu.table_name  AS foreign_table,
-                               ccu.column_name AS foreign_column
-                        FROM information_schema.table_constraints tc
-                        JOIN information_schema.key_column_usage kcu
-                          ON tc.constraint_name = kcu.constraint_name
-                        JOIN information_schema.constraint_column_usage ccu
-                          ON tc.constraint_name = ccu.constraint_name
-                        WHERE tc.table_schema  = %s
-                          AND tc.table_name    = %s
-                          AND tc.constraint_type = 'FOREIGN KEY'
-                    """, (schema, table_name))
-                    fk_rows = cur.fetchall()
-                    fk_cols = {r["column_name"] for r in fk_rows}
-
-                # Construire DDL
-                ddl_lines = [f"CREATE TABLE {table_name} ("]
-                for col in cols:
-                    nullable = "" if col["is_nullable"] == "YES" else " NOT NULL"
-                    pk       = " PRIMARY KEY" if col["column_name"] in pk_cols else ""
-                    ddl_lines.append(
-                        f"    {col['column_name']} {col['data_type']}{pk}{nullable},"
-                    )
-                ddl_lines.append(");")
-                ddl = "\n".join(ddl_lines)
-
-                # Upsert table dans nl2sql_tables
-                with conn.cursor() as cur:
-                    cur.execute("""
-                        INSERT INTO nl2sql_tables
-                            (account_id, schema_name, table_name, ddl, description)
-                        VALUES (%s, %s, %s, %s, %s)
-                        ON CONFLICT (account_id, schema_name, table_name)
-                        DO UPDATE SET ddl = EXCLUDED.ddl, description = EXCLUDED.description
-                        RETURNING id
-                    """, (account_id, schema, table_name, ddl, None))
-                    table_id = cur.fetchone()[0]
-
-                    # Upsert colonnes
-                    for col in cols:
-                        cur.execute("""
-                            INSERT INTO nl2sql_columns
-                                (table_id, column_name, data_type, is_nullable, is_pk, is_fk)
-                            VALUES (%s, %s, %s, %s, %s, %s)
-                            ON CONFLICT (table_id, column_name)
-                            DO UPDATE SET data_type  = EXCLUDED.data_type,
-                                          is_nullable = EXCLUDED.is_nullable,
-                                          is_pk       = EXCLUDED.is_pk,
-                                          is_fk       = EXCLUDED.is_fk
-                        """, (
-                            table_id,
-                            col["column_name"],
-                            col["data_type"],
-                            col["is_nullable"] == "YES",
-                            col["column_name"] in pk_cols,
-                            col["column_name"] in fk_cols,
-                        ))
-
-                    # Upsert relations
-                    for fk in fk_rows:
-                        cur.execute("""
-                            INSERT INTO nl2sql_relations
-                                (account_id, from_table, from_column, to_table, to_column)
-                            VALUES (%s, %s, %s, %s, %s)
-                            ON CONFLICT DO NOTHING
-                        """, (account_id, table_name,
-                              fk["column_name"], fk["foreign_table"], fk["foreign_column"]))
-
-                conn.commit()
-
-                # Calcul embedding
-                with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-                    cur.execute("""
-                        SELECT c.column_name, c.data_type, c.label, c.synonyms
-                        FROM nl2sql_columns c WHERE c.table_id = %s
-                    """, (table_id,))
-                    db_cols = [dict(r) for r in cur.fetchall()]
-
-                table_row = {
-                    "table_name": table_name,
-                    "label": None, "synonyms": None,
-                    "domain": None, "description": None,
-                }
-                emb_text = build_embedding_text(table_row, db_cols, [])
-                embedding = embedder.encode(emb_text).tolist()
-
-                with conn.cursor() as cur:
-                    cur.execute("""
-                        UPDATE nl2sql_tables
-                        SET embedding = %s::vector, indexed_at = NOW()
-                        WHERE id = %s
-                    """, (embedding, table_id))
-                conn.commit()
-                indexed += 1
-
-            except Exception as e:
-                logger.warning("⚠️  Table %s ignorée : %s", table_name, e)
-                conn.rollback()
-                continue
-
-        src.close()
-        conn.close()
-        elapsed = round(time.time() - t0, 1)
-
-        logger.info("✅ Indexation terminée : %d/%d tables en %ss",
-                    indexed, len(source_tables), elapsed)
-
-        return jsonify({
-            "indexed":   indexed,
-            "total":     len(source_tables),
-            "elapsed_s": elapsed,
-        })
-
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         logger.exception("Erreur /index")
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.get("/index/report")
+def get_index_report():
+    """Tables retenues (volume, colonnes, embedding) et tables exclues (raison). Query : ?account_id=1"""
+    account_id = request.args.get("account_id", type=int)
+    if not account_id:
+        return jsonify({"error": "'account_id' obligatoire"}), 400
+    try:
+        conn = get_conn()
+        report = index_report(conn, account_id)
+        conn.close()
+        return jsonify(report)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Erreur /index/report")
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.get("/accounts")
+def get_accounts():
+    """Comptes (bases sources) connus de l'index : id, nom, base."""
+    try:
+        conn = get_conn()
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("SELECT id, name, pg_db, pg_schema FROM nl2sql_accounts ORDER BY id")
+            accounts = [dict(r) for r in cur.fetchall()]
+        conn.close()
+        return jsonify({"accounts": accounts})
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Erreur /accounts")
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.get("/modules")
+def get_modules():
+    """Modules Odoo de l'index (tables, tables enrichies). Query : ?account_id=1"""
+    account_id = request.args.get("account_id", type=int)
+    if not account_id:
+        return jsonify({"error": "'account_id' obligatoire"}), 400
+    try:
+        conn = get_conn()
+        modules = list_modules(conn, account_id)
+        conn.close()
+        return jsonify({"account_id": account_id, "modules": modules})
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Erreur /modules")
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.get("/export")
+def export():
+    """
+    Fichier d'enrichissement (JSON) d'un module ou d'une liste de tables.
+    Query : ?account_id=1&module=account  |  &tables=account_move,sale_order  |  &include_technical=true
+    """
+    account_id = request.args.get("account_id", type=int)
+    module = (request.args.get("module") or "").strip() or None
+    tables = [t.strip() for t in (request.args.get("tables") or "").split(",") if t.strip()] or None
+    include_technical = (request.args.get("include_technical") or "").lower() in ("1", "true", "yes")
+    if not account_id:
+        return jsonify({"error": "'account_id' obligatoire"}), 400
+    if not module and not tables:
+        return jsonify({"error": "préciser 'module' ou 'tables' (liste des modules : /modules)"}), 400
+    try:
+        conn = get_conn()
+        data = export_schema(conn, account_id, module, tables, include_technical)
+        conn.close()
+        if not data["tables"]:
+            return jsonify({"error": "aucune table indexée pour ce module ou ces tables"}), 404
+        return jsonify(data)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Erreur /export")
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.post("/import")
+def import_():
+    """
+    Applique un fichier d'enrichissement (le JSON de /export, rempli).
+    Body : le fichier. Query : ?account_id=1 (sinon celui du fichier) &dry_run=true &source=manual
+    Les tables modifiées sont réencodées aussitôt (pas de réindexation complète).
+    """
+    payload = request.get_json(silent=True)
+    if payload is None:
+        return jsonify({"error": "corps JSON attendu (fichier exporté par /export)"}), 400
+    account_id = request.args.get("account_id", type=int) or payload.get("account_id")
+    dry_run = (request.args.get("dry_run") or "").lower() in ("1", "true", "yes")
+    source = (request.args.get("source") or "manual").strip()[:200]
+    if not account_id:
+        return jsonify({"error": "'account_id' obligatoire"}), 400
+    try:
+        conn = get_conn()
+        report = import_enrichment(conn, int(account_id), payload, dry_run=dry_run, source=source)
+        t0 = time.time()
+        for table_id in report.pop("changed_table_ids"):
+            reindex_table_embeddings(conn, table_id, embed)
+        report["reencoded_s"] = round(time.time() - t0, 2)
+        conn.close()
+        logger.info("Import d'enrichissement%s : %d tables, %d champs",
+                    " (simulation)" if dry_run else "", len(report["tables_changed"]), report["fields_changed"])
+        return jsonify(report)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Erreur /import")
         return jsonify({"error": str(exc)}), 500
 
 
 @app.post("/annotate/table")
 def annotate_table():
     """
-    Body : {
-      "account_id": 1,
-      "table_name": "sale_order",
-      "label":      "Commandes clients",
-      "synonyms":   "commandes, orders, ventes",
-      "domain":     "commercial",
-      "notes":      "..."
-    }
+    Body : {"account_id": 1, "table_name": "sale_order", "label": "...", "synonyms": "...",
+            "domain": "...", "notes": "...", "description": "..."}
+    Les annotations manuelles sont prioritaires : l'indexation et l'enrichissement ne les écrasent pas.
     """
     data       = request.get_json(silent=True) or {}
     account_id = data.get("account_id")
@@ -588,15 +490,17 @@ def annotate_table():
         with conn.cursor() as cur:
             cur.execute("""
                 UPDATE nl2sql_tables
-                SET label    = COALESCE(%s, label),
-                    synonyms = COALESCE(%s, synonyms),
-                    domain   = COALESCE(%s, domain),
-                    notes    = COALESCE(%s, notes)
+                SET label           = COALESCE(%s, label),
+                    synonyms        = COALESCE(%s, synonyms),
+                    domain          = COALESCE(%s, domain),
+                    notes           = COALESCE(%s, notes),
+                    description     = COALESCE(%s, description),
+                    manual_override = TRUE
                 WHERE account_id = %s AND table_name = %s
                 RETURNING id
             """, (
-                data.get("label"), data.get("synonyms"),
-                data.get("domain"), data.get("notes"),
+                data.get("label"), data.get("synonyms"), data.get("domain"),
+                data.get("notes"), data.get("description"),
                 account_id, table_name,
             ))
             row = cur.fetchone()
@@ -606,13 +510,11 @@ def annotate_table():
             table_id = row[0]
         conn.commit()
 
-        # Recalcule l'embedding avec les nouvelles annotations
-        _reindex_table(conn, table_id)
+        reindex_table_embeddings(conn, table_id, embed)
         conn.close()
-
         return jsonify({"status": "ok", "table_name": table_name, "reindexed": True})
 
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         logger.exception("Erreur /annotate/table")
         return jsonify({"error": str(exc)}), 500
 
@@ -620,15 +522,8 @@ def annotate_table():
 @app.post("/annotate/column")
 def annotate_column():
     """
-    Body : {
-      "account_id":  1,
-      "table_name":  "sale_order",
-      "column_name": "amount_total",
-      "label":       "Montant total",
-      "synonyms":    "total, montant, panier, chiffre d'affaires",
-      "example":     "1250.00",
-      "display":     true
-    }
+    Body : {"account_id": 1, "table_name": "sale_order", "column_name": "amount_total",
+            "label": "...", "synonyms": "...", "example": "...", "notes": "...", "display": true}
     """
     data        = request.get_json(silent=True) or {}
     account_id  = data.get("account_id")
@@ -643,11 +538,12 @@ def annotate_column():
         with conn.cursor() as cur:
             cur.execute("""
                 UPDATE nl2sql_columns c
-                SET label    = COALESCE(%s, c.label),
-                    synonyms = COALESCE(%s, c.synonyms),
-                    example  = COALESCE(%s, c.example),
-                    notes    = COALESCE(%s, c.notes),
-                    display  = COALESCE(%s, c.display)
+                SET label           = COALESCE(%s, c.label),
+                    synonyms        = COALESCE(%s, c.synonyms),
+                    example         = COALESCE(%s, c.example),
+                    notes           = COALESCE(%s, c.notes),
+                    display         = COALESCE(%s, c.display),
+                    manual_override = TRUE
                 FROM nl2sql_tables t
                 WHERE c.table_id    = t.id
                   AND t.account_id  = %s
@@ -667,13 +563,11 @@ def annotate_column():
             table_id = row[0]
         conn.commit()
 
-        # Recalcule l'embedding de la table parente
-        _reindex_table(conn, table_id)
+        reindex_table_embeddings(conn, table_id, embed)
         conn.close()
-
         return jsonify({"status": "ok", "column_name": column_name, "reindexed": True})
 
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         logger.exception("Erreur /annotate/column")
         return jsonify({"error": str(exc)}), 500
 
@@ -681,8 +575,8 @@ def annotate_column():
 @app.post("/reindex")
 def reindex():
     """
-    Recalcule l'embedding d'une table spécifique.
-    Body : { "account_id": 1, "table_name": "sale_order" }
+    Recalcule les embeddings d'une table et de ses colonnes.
+    Body : {"account_id": 1, "table_name": "sale_order"}
     """
     data       = request.get_json(silent=True) or {}
     account_id = data.get("account_id")
@@ -704,43 +598,29 @@ def reindex():
                 return jsonify({"error": f"Table '{table_name}' introuvable"}), 404
             table_id = row[0]
 
-        _reindex_table(conn, table_id)
+        reindex_table_embeddings(conn, table_id, embed)
         conn.close()
         return jsonify({"status": "ok", "table_name": table_name, "reindexed": True})
 
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         logger.exception("Erreur /reindex")
         return jsonify({"error": str(exc)}), 500
 
 
-def _reindex_table(conn, table_id: int):
-    """Recalcule et sauvegarde l'embedding d'une table."""
-    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-        cur.execute("SELECT * FROM nl2sql_tables WHERE id = %s", (table_id,))
-        table = dict(cur.fetchone())
-        cur.execute("""
-            SELECT column_name, data_type, label, synonyms
-            FROM nl2sql_columns WHERE table_id = %s
-        """, (table_id,))
-        cols = [dict(r) for r in cur.fetchall()]
-        cur.execute("""
-            SELECT label FROM nl2sql_relations
-            WHERE (from_table = %s OR to_table = %s)
-              AND account_id = %s
-        """, (table["table_name"], table["table_name"], table["account_id"]))
-        rels = [dict(r) for r in cur.fetchall()]
-
-    emb_text  = build_embedding_text(table, cols, rels)
-    embedding = embedder.encode(emb_text).tolist()
-
-    with conn.cursor() as cur:
-        cur.execute("""
-            UPDATE nl2sql_tables
-            SET embedding = %s::vector, indexed_at = NOW()
-            WHERE id = %s
-        """, (embedding, table_id))
-    conn.commit()
-    logger.info("🔄 Reindexé : table_id=%d", table_id)
+# ── Démarrage ──────────────────────────────────────────────────────────────
+ensure_schema()
+_conn = psycopg2.connect(**NL2SQL_DB)
+_account = sync_default_account(_conn, default_account_from_env())
+_conn.close()
+logger.info("✅ Compte par défaut : %s@%s:%s/%s (schéma %s)", _account["pg_user"], _account["pg_host"],
+            _account["pg_port"], _account["pg_db"], _account["pg_schema"])
+load_embedder()
+_conn = psycopg2.connect(**NL2SQL_DB)
+vector_state = ensure_vector_space(_conn, embedder.dimension, embedder.cfg.model_id)
+_conn.close()
+if vector_state["reindex_required"]:
+    logger.warning("⚠️  Vecteurs absents ou obsolètes : relancez POST /index pour ce modèle (%s)",
+                   embedder.cfg.model_id)
 
 
 if __name__ == "__main__":

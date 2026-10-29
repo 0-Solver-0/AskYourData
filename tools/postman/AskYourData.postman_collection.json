@@ -1,0 +1,350 @@
+{
+  "info": {
+    "name": "AskYourData — tests manuels",
+    "description": "Santé, indexation (dry run, complète, rapport), recherche de schéma (translate + diagnostic), annotations. Variables : base_url, account_id.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:5000"
+    },
+    {
+      "key": "account_id",
+      "value": "1"
+    }
+  ],
+  "item": [
+    {
+      "name": "1. Health",
+      "request": {
+        "method": "GET",
+        "url": "{{base_url}}/api/v1/health"
+      }
+    },
+    {
+      "name": "2. Index — dry run (rien n'est écrit)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"account_id\": {{account_id}},\n  \"dry_run\": true\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": "{{base_url}}/api/v1/index"
+      }
+    },
+    {
+      "name": "3. Index — complet",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"account_id\": {{account_id}}\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": "{{base_url}}/api/v1/index"
+      }
+    },
+    {
+      "name": "4. Index — rapport (retenues / exclues)",
+      "request": {
+        "method": "GET",
+        "url": {
+          "raw": "{{base_url}}/api/v1/index/report?account_id={{account_id}}",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "index",
+            "report"
+          ],
+          "query": [
+            {
+              "key": "account_id",
+              "value": "{{account_id}}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "5. Translate — top customers",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"question\": \"Top 5 customers by revenue\",\n  \"account_id\": {{account_id}}\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": "{{base_url}}/api/v1/translate"
+      }
+    },
+    {
+      "name": "6. Translate — unpaid invoices by salesperson",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"question\": \"Customers with the highest unpaid invoice amount, by salesperson\",\n  \"account_id\": {{account_id}}\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": "{{base_url}}/api/v1/translate"
+      }
+    },
+    {
+      "name": "6b. Schema debug — unpaid invoices by salesperson",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"question\": \"Customers with the highest unpaid invoice amount, by salesperson\",\n  \"account_id\": {{account_id}}\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": "{{base_url}}/api/v1/schema/debug"
+      }
+    },
+    {
+      "name": "7. Translate — CRM pipeline",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"question\": \"Expected revenue in the CRM pipeline by stage\",\n  \"account_id\": {{account_id}}\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": "{{base_url}}/api/v1/translate"
+      }
+    },
+    {
+      "name": "7b. Schema debug — CRM pipeline",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"question\": \"Expected revenue in the CRM pipeline by stage\",\n  \"account_id\": {{account_id}}\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": "{{base_url}}/api/v1/schema/debug"
+      }
+    },
+    {
+      "name": "8. Translate — stock",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"question\": \"Products with less than 10 units in stock\",\n  \"account_id\": {{account_id}}\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": "{{base_url}}/api/v1/translate"
+      }
+    },
+    {
+      "name": "9. Annotate — table",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"account_id\": {{account_id}},\n  \"table_name\": \"sale_order\",\n  \"label\": \"Sales orders\",\n  \"synonyms\": \"orders, sales, deals\",\n  \"domain\": \"sales\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": "{{base_url}}/api/v1/annotate/table"
+      }
+    },
+    {
+      "name": "10. Annotate — column",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"account_id\": {{account_id}},\n  \"table_name\": \"sale_order\",\n  \"column_name\": \"amount_total\",\n  \"label\": \"Total amount\",\n  \"synonyms\": \"revenue, total\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": "{{base_url}}/api/v1/annotate/column"
+      }
+    },
+    {
+      "name": "11. Enrichissement — modules",
+      "request": {
+        "method": "GET",
+        "url": "{{base_url}}/api/v1/schema/modules?account_id={{account_id}}"
+      }
+    },
+    {
+      "name": "12. Enrichissement — export du module account",
+      "request": {
+        "method": "GET",
+        "url": "{{base_url}}/api/v1/schema/export?account_id={{account_id}}&module=account"
+      }
+    },
+    {
+      "name": "13. Enrichissement — import (simulation)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "<coller ici le fichier exporté, rempli>",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": "{{base_url}}/api/v1/schema/import?account_id={{account_id}}&dry_run=true"
+      }
+    },
+    {
+      "name": "14. Enrichissement — import",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "<coller ici le fichier exporté, rempli>",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": "{{base_url}}/api/v1/schema/import?account_id={{account_id}}"
+      }
+    },
+    {
+      "name": "15. Recherche structurée — unpaid invoices by salesperson",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"account_id\": {{account_id}},\n  \"question\": \"Customers with the highest unpaid invoice amount, by salesperson\",\n  \"structured\": {\n    \"subject\": \"customer invoices\",\n    \"measures\": [\n      \"amount still due on the invoice\"\n    ],\n    \"filters\": [\n      \"customer invoices only\",\n      \"posted invoices\",\n      \"invoice not fully paid\"\n    ],\n    \"group_by\": [\n      \"customer\",\n      \"salesperson\"\n    ],\n    \"order\": \"unpaid amount desc\"\n  }\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": "{{base_url}}/api/v1/schema/structured"
+      }
+    }
+  ]
+}
