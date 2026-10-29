@@ -4,10 +4,11 @@ Génération SQL de bout en bout, sans exécution (POST /api/v1/translate) : dé
 
 Affiche pour chaque question le statut (sql, missing, cannot_answer…), les tables envoyées,
 le SQL, le temps et le coût ; écrit un fichier Markdown à relire (benchmark/out/sql_<fichier>.md).
-Le SQL n'est pas exécuté : la vérification et l'exécution viennent à l'incrément 4.
+Avec --execute : POST /api/v1/ask, la requête est vérifiée puis exécutée en lecture seule ;
+affiche le résumé, les premières lignes, les corrections éventuelles.
 
 Usage :
-  python benchmark/sql_eval.py --file benchmark/unseen_questions.yaml [--use-structured]
+  python benchmark/sql_eval.py --file benchmark/unseen_questions.yaml [--execute] [--use-structured]
                                [--url http://localhost:5000] [--account 1] [--sql-reasoning medium]
 Dépendances : requests, pyyaml.
 """
@@ -31,10 +32,11 @@ def main() -> int:
     parser.add_argument("--use-structured", action="store_true", help="découpage du fichier, PREP sauté")
     parser.add_argument("--sql-reasoning", default=None)
     parser.add_argument("--out", default=None)
+    parser.add_argument("--execute", action="store_true", help="vérifier et exécuter (POST /api/v1/ask)")
     args = parser.parse_args()
 
     cases = yaml.safe_load(open(args.file, encoding="utf-8"))
-    out_path = args.out or os.path.join(HERE, "out", f"sql_{os.path.splitext(os.path.basename(args.file))[0]}.md")
+    out_path = args.out or os.path.join(HERE, "out", f"{'ask' if args.execute else 'sql'}_{os.path.splitext(os.path.basename(args.file))[0]}.md")
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
 
     lines = [f"# SQL généré — {time.strftime('%Y-%m-%d %H:%M')} — {args.file}", ""]
@@ -48,7 +50,8 @@ def main() -> int:
         if args.sql_reasoning:
             body["reasoning"] = {"sql": args.sql_reasoning}
         try:
-            data = requests.post(f"{args.url}/api/v1/translate", json=body, timeout=300).json()
+            endpoint = "ask" if args.execute else "translate"
+            data = requests.post(f"{args.url}/api/v1/{endpoint}", json=body, timeout=300).json()
         except Exception as exc:  # noqa: BLE001
             print(f"✗ {q}\n    erreur : {exc}")
             continue
@@ -58,7 +61,7 @@ def main() -> int:
         times.append(total_s)
         costs.append(data.get("cost_usd") or 0.0)
         models = data.get("models") or {}
-        mark = {"sql": "✓", "missing": "?", "cannot_answer": "•"}.get(status, "✗")
+        mark = {"ok": "✓", "sql": "✓", "missing": "?", "cannot_answer": "•"}.get(status, "✗")
         retried = " ↻" if len(data.get("attempts") or []) > 1 else ""
         print(f"{mark}{retried} {q}  [{status}, {total_s:.1f} s, {data.get('cost_usd', 0):.4f} $, sql={models.get('sql')}]")
         print(f"    tables : {', '.join(data.get('tables_used') or [])}")
@@ -76,6 +79,14 @@ def main() -> int:
             print(f"    manque : {data['missing']}")
         if data.get("reason"):
             print(f"    raison : {data['reason']}")
+        checks = data.get("checks") or []
+        for n, chk in enumerate(checks[:-1] if status == "ok" else checks, start=1):
+            print(f"    ✗ vérification {n} : {chk.get('error')}")
+        answer = data.get("answer")
+        if answer:
+            print(f"    → {answer['summary']}  ({answer['row_count']} lignes)")
+            for row in answer["rows"][:5]:
+                print("      " + " | ".join(str(v) for v in row))
 
         lines += [f"## {q}", "",
                   f"- statut : **{status}** · {total_s:.1f} s · {data.get('cost_usd', 0):.4f} $ · "
@@ -93,14 +104,24 @@ def main() -> int:
             lines.append(f"- manque : {data['missing']}")
         if data.get("reason"):
             lines.append(f"- raison : {data['reason']}")
+        for n, chk in enumerate(data.get("checks") or [], start=1):
+            if chk.get("error"):
+                lines.append(f"- vérification {n} refusée : `{chk['error']}`")
         if data.get("raw"):
             lines += ["", "Réponse brute du modèle :", "", "```", data["raw"], "```"]
         if data.get("sql"):
             lines += ["", "```sql", data["sql"], "```"]
+        answer = data.get("answer")
+        if answer:
+            lines += ["", f"**Résultat** : {answer['summary']} ({answer['row_count']} lignes"
+                      + (", tronqué" if answer["truncated"] else "") + ")", "",
+                      "| " + " | ".join(answer["columns"]) + " |",
+                      "|" + "---|" * len(answer["columns"])]
+            lines += ["| " + " | ".join(str(v) for v in row) + " |" for row in answer["rows"][:20]]
         if data.get("schema_ddl"):
             lines += ["", f"<details><summary>Schéma envoyé (~{data.get('token_estimate')} tokens)</summary>", "",
                       "```sql", data["schema_ddl"], "```", "", "</details>"]
-        lines += ["", "- [ ] SQL juste", ""]
+        lines += ["", "- [ ] résultat juste" if args.execute else "- [ ] SQL juste", ""]
 
     with open(out_path, "w", encoding="utf-8") as fh:
         fh.write("\n".join(lines))

@@ -37,6 +37,11 @@ def build_user_message(question: str, structured: Optional[dict], schema_ddl: st
         parts.append("You asked for: " + json.dumps(previous["missing"], ensure_ascii=False)
                      + ". The schema above now includes what the search found. If it is still not there, "
                      "use <cannot_answer>.")
+    if previous and previous.get("error"):
+        parts.append("Your previous query:\n" + (previous.get("sql") or "").strip()
+                     + "\n\nwas rejected with this error:\n" + previous["error"].strip()
+                     + "\n\nWrite a corrected query, with the same answer format. Use only the tables and "
+                     "columns of the schema above.")
     return "\n\n".join(parts)
 
 
