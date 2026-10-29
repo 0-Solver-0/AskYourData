@@ -254,6 +254,7 @@ Les refus de PREP (`write_request`, `out_of_scope`, `ambiguous`) arrêtent la ch
 curl -X POST http://localhost:5000/api/v1/translate -H "Content-Type: application/json" \
   -d '{"question": "Top 5 customers by revenue this year", "account_id": 1}'
 python benchmark/sql_eval.py --file benchmark/unseen_questions.yaml      # SQL à relire : benchmark/out/sql_*.md
+python tools/try_question.py "Top 5 customers by revenue this year"      # une question, étape par étape
 ```
 
 ## Annotations
