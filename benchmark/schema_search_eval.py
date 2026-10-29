@@ -1,11 +1,12 @@
 """
 Évaluation de la recherche de schéma sur la vraie base (sans LLM, sans coût).
 
-Pour chaque question de benchmark/schema_questions.yaml : appelle /api/v1/schema/debug,
+Pour chaque question du fichier : appelle /api/v1/schema/debug (question brute), ou
+/api/v1/schema/structured si la question porte un découpage « structured » (nouvelle forme) ;
 vérifie que les tables attendues sont bien envoyées au modèle SQL (rappel), compte les tables
 en trop (précision) et affiche la taille du schéma.
-Mesure aussi le rang des tables attendues dans le classement par vecteur seul (question brute
-contre fiches de tables, sans mots ni règles) : c'est l'effet direct de l'enrichissement.
+Mesure aussi le rang des tables attendues par vecteur seul (question brute, ou sujet de la question
+découpée, contre les fiches de tables, sans mots ni règles) : c'est l'effet direct de l'enrichissement.
 
 Usage :
   python benchmark/schema_search_eval.py [--url http://localhost:5000] [--account 1]
@@ -63,7 +64,11 @@ def run(cases: list, args) -> dict:
     all_ranks = []
     for case in cases:
         body = {"question": case["question"], "account_id": args.account}
-        resp = requests.post(f"{args.url}/api/v1/schema/debug", json=body, timeout=60)
+        if case.get("structured"):          # question découpée à la main → nouvelle recherche
+            body["structured"] = case["structured"]
+            resp = requests.post(f"{args.url}/api/v1/schema/structured", json=body, timeout=60)
+        else:
+            resp = requests.post(f"{args.url}/api/v1/schema/debug", json=body, timeout=60)
         if resp.status_code != 200:
             print(f"✗ {case['question']}\n    erreur {resp.status_code} : {resp.text[:200]}")
             continue
@@ -82,7 +87,7 @@ def run(cases: list, args) -> dict:
         useful_total += len(useful)
         tokens.append(data.get("token_estimate") or 0)
         times.append(data.get("elapsed_s") or 0)
-        ranks = vector_ranks(case["expected"], dbg.get("vector_ranking"))
+        ranks = vector_ranks(case["expected"], dbg.get("vector_ranking") or dbg.get("subject_ranking"))
         all_ranks += [r for _, r in ranks]
 
         mark = "✓" if not missing else "✗"
@@ -95,8 +100,15 @@ def run(cases: list, args) -> dict:
             print(f"    en trop    : {extra}")
         print("    vecteur seul : " + ", ".join(f"{t} #{r}" if r else f"{t} >20" for t, r in ranks))
         if args.verbose:
-            print("    classement : " + ", ".join(f"{r['table_name']}={r['score']}"
-                                                 for r in dbg.get("ranking", [])[:8]))
+            if dbg.get("pieces") is not None:
+                print("    sujet : " + ", ".join(f"{r['table_name']}={r['similarity']}"
+                                             for r in dbg.get("subject_ranking", [])[:5]))
+                for piece in dbg["pieces"]:
+                    found = ", ".join(f"{m['table']}.{m['column']}={m['similarity']}" for m in piece["matches"])
+                    print(f"    {piece['role']} « {piece['text']} » → {found or 'rien'}")
+            else:
+                print("    classement : " + ", ".join(f"{r['table_name']}={r['score']}"
+                                                     for r in dbg.get("ranking", [])[:8]))
 
     if not tokens:
         return {}

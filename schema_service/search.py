@@ -433,10 +433,15 @@ def column_comment(col: dict) -> str:
         parts.append(f"({col['synonyms']})")
     if col.get("selection_values"):
         parts.append(f"values: {col['selection_values']}")
+    if col.get("notes"):
+        parts.append(f"note: {col['notes']}")
     if col.get("data_type") == "jsonb" and (
             col["column_name"] in ("name", "description") or col.get("odoo_type") in ("char", "text", "html")):
         parts.append("translatable JSON: use ->>'en_US'")
     return " ".join(parts)
+
+
+DESCRIPTION_MAX_CHARS = 320
 
 
 def render_table(table: dict, cols: list[tuple[dict, str]], relations: list[dict],
@@ -445,7 +450,7 @@ def render_table(table: dict, cols: list[tuple[dict, str]], relations: list[dict
     label = table.get("label") or table.get("odoo_label")
     desc = table.get("description")
     notes = "; ".join(value_notes or [])
-    comment = " — ".join(x for x in (label, (desc or "")[:160], notes) if x)
+    comment = " — ".join(x for x in (label, (desc or "")[:DESCRIPTION_MAX_CHARS], notes) if x)
     if comment:
         header += f"  -- {comment}"
 

@@ -420,3 +420,22 @@ def test_vector_ranking_orders_by_similarity(dbs):
     ranking = vector_ranking(nl, account["id"], vec, limit=3)
     assert ranking[0]["table_name"] == "res_country" and ranking[0]["similarity"] == pytest.approx(1.0, abs=1e-3)
     assert len(ranking) == 3
+
+
+def test_column_similarities_per_piece(dbs):
+    from schema_service.search_data import column_similarities
+
+    src, nl, account = dbs
+    index_account(nl, src, account, fake_embed, load_filter_config(CONFIG_PATH))
+    with nl.cursor() as cur:
+        cur.execute("""SELECT c.embedding FROM nl2sql_columns c JOIN nl2sql_tables t ON t.id = c.table_id
+                       WHERE t.account_id = %s AND t.table_name = 'sale_order' AND c.column_name = 'amount_total'""",
+                    (account["id"],))
+        vec = cur.fetchone()[0]
+    amount_vec = vec.to_list() if hasattr(vec, "to_list") else [float(x) for x in vec]
+    other = fake_embed(["customer"])[0]
+    sims = column_similarities(nl, account["id"], ["sale_order", "res_partner"], [other, amount_vec])
+    assert {t for t, _ in sims} == {"sale_order", "res_partner"}
+    assert all(len(v) == 2 for v in sims.values())
+    assert sims[("sale_order", "amount_total")][1] == pytest.approx(1.0, abs=1e-5)
+    assert column_similarities(nl, account["id"], [], [other]) == {}

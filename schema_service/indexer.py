@@ -149,7 +149,8 @@ def reindex_table_embeddings(conn, table_id: int, embed: EmbedFn) -> None:
         table = dict(cur.fetchone())
         cur.execute(
             """
-            SELECT id, column_name, data_type, label, synonyms, notes, odoo_label, odoo_help, selection_values
+            SELECT id, column_name, data_type, label, synonyms, notes, odoo_label, odoo_help, odoo_type,
+                   selection_values
             FROM nl2sql_columns WHERE table_id = %s ORDER BY id
             """,
             (table_id,),

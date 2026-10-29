@@ -35,16 +35,34 @@ def test_column_text_contains_labels_and_values():
     assert "Status" in text and "Order status" in text and "draft=Quotation" in text
 
 
-def test_table_text_starts_with_most_useful_information():
+def test_enriched_table_text_reads_like_a_subject():
     table = {"table_name": "account_move", "odoo_model": "account.move", "odoo_label": "Journal Entry",
-             "description": "Customer invoices and vendor bills"}
+             "label": "Invoices and bills", "description": "Customer invoices and vendor bills",
+             "synonyms": "invoice, bill", "domain": "accounting"}
+    cols = [{"column_name": "id"}, {"column_name": "amount_residual", "odoo_label": "Amount Due"}]
+    text = build_table_text(table, cols)
+    assert text.startswith("Invoices and bills | Customer invoices and vendor bills | invoice, bill | Journal Entry")
+    assert "Amount Due" not in text            # table enrichie : les colonnes ont leurs propres vecteurs
+    assert "domain: accounting" in text
+
+
+def test_plain_table_text_lists_business_columns_first():
+    table = {"table_name": "account_move", "odoo_label": "Journal Entry"}
     cols = [
         {"column_name": "id"},
         {"column_name": "create_uid"},
-        {"column_name": "amount_residual", "odoo_label": "Amount Due"},
+        {"column_name": "sequence_prefix", "odoo_label": "Sequence Prefix", "odoo_type": "char"},
+        {"column_name": "payment_state", "odoo_label": "Payment Status", "odoo_type": "selection"},
+        {"column_name": "amount_residual", "odoo_label": "Amount Due", "odoo_type": "monetary"},
     ]
     text = build_table_text(table, cols)
-    assert text.startswith("account_move | account move | account.move | Journal Entry")
-    assert "Customer invoices" in text
-    assert "Amount Due" in text
-    assert "create uid" not in text  # colonnes techniques ignorées
+    assert text.startswith("Journal Entry | account move")
+    assert text.index("Payment Status") < text.index("Amount Due") < text.index("Sequence Prefix")
+    assert "create uid" not in text
+
+
+def test_column_text_puts_meaning_before_technical_name():
+    text = build_column_text({"column_name": "amount_residual_signed", "odoo_label": "Amount Due Signed",
+                              "synonyms": "amount due", "notes": "Negative for credit notes"})
+    assert text.startswith("Amount Due Signed | amount due | Negative for credit notes")
+    assert text.endswith("column amount_residual_signed")

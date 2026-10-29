@@ -10,6 +10,7 @@ Pipeline actuel :
 Endpoints :
   POST /api/v1/translate   — question → schéma réduit (sql = null tant que la génération n'est pas branchée)
   POST /api/v1/schema/debug — diagnostic de la recherche de schéma
+  POST /api/v1/schema/structured — recherche à partir d'une question découpée (sujet, mesures…)
   GET  /api/v1/health      — healthcheck des services
   GET  /api/v1/schemas     — liste les comptes disponibles
   POST /api/v1/index       — indexe les tables d'un compte (dry_run possible)
@@ -230,6 +231,20 @@ def schema_debug():
         return jsonify({"error": "Timeout schema_service"}), 504
     except ValueError:
         return jsonify({"error": "Réponse invalide du schema_service"}), 502
+
+
+@app.post("/api/v1/schema/structured")
+def schema_structured():
+    """
+    Recherche de schéma à partir d'une question déjà découpée (test manuel, puis rôle PREP).
+    Body : {"account_id": 1, "question": "...", "structured": {"subject": "...", "measures": [...],
+            "filters": [...], "group_by": [...], "period": "...", "order": "..."}}
+    Le diagnostic (classement du sujet, colonnes trouvées par morceau) est toujours renvoyé.
+    """
+    data = request.get_json(silent=True) or {}
+    if not data.get("account_id") or not data.get("structured"):
+        return jsonify({"error": "'account_id' et 'structured' obligatoires"}), 400
+    return _proxy("POST", "/select/structured", json={**data, "debug": True})
 
 
 @app.post("/api/v1/translate")
