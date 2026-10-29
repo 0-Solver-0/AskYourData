@@ -34,5 +34,6 @@ Question: "Total spend per vendor in Germany last quarter"
 {"question": "Total spend per vendor in Germany last quarter", "subject": "purchase orders", "measures": ["total spend"], "filters": ["country"], "group_by": ["vendor"], "period": "order date", "order": null}
 ```
 
-Les deux règles « entity listed » et « time breakdown » ont été ajoutées après le test : le fichier
-`muse_questions.yaml` correspond à la version sans elles.
+Les deux règles « entity listed » et « time breakdown » ont été ajoutées après un premier essai ;
+`muse_questions.yaml` vient de cette version finale (~580 tokens de réflexion pour les 10 questions,
+384 tokens du prompt servis par le cache).

@@ -1,5 +1,6 @@
-# Découpage produit par Muse Spark (meta-models/muse-spark-open-1026, reasoning_effort low),
-# repris tel quel. Seules les tables attendues ont été ajoutées à la main.
+# Découpage produit par Muse Spark (meta-models/muse-spark-open-1026, reasoning_effort low)
+# avec le prompt de prompts/prep_structure.md, repris tel quel.
+# Seules les tables attendues ont été ajoutées à la main.
 # Lancer : python benchmark/schema_search_eval.py --file benchmark/muse_questions.yaml --verbose
 
 - question: "Revenue by product category last month"
@@ -15,7 +16,7 @@
   structured:
     subject: "opportunities"
     measures: []
-    filters: ["opportunity status"]
+    filters: ["status"]
     group_by: ["sales team"]
   expected: [crm_lead, crm_team]
 
@@ -24,7 +25,7 @@
     subject: "customer invoices"
     measures: []
     filters: ["payment status", "days overdue"]
-    group_by: []
+    group_by: ["customer"]
   expected: [account_move, res_partner]
 
 # Piège : pas de transporteur dans la base de démo
@@ -41,10 +42,10 @@
   structured:
     subject: "sales orders"
     measures: []
-    filters: ["order status"]
+    filters: ["status"]
     group_by: ["salesperson"]
     period: "order date"
-    order: "order count desc, top 3"
+    order: "count desc, top 3"
   expected: [sale_order, res_users]
 
 - question: "Total purchase amount per product this quarter"
@@ -70,8 +71,8 @@
   structured:
     subject: "stock on hand"
     measures: []
-    filters: ["stock quantity", "warehouse"]
-    group_by: []
+    filters: ["warehouse", "stock level"]
+    group_by: ["product"]
   expected: [stock_quant, [stock_warehouse, stock_location], [product_product, product_template]]
 
 - question: "Credit notes issued to customers in France this year"
@@ -88,6 +89,6 @@
     subject: "customers"
     measures: []
     filters: []
-    group_by: ["month"]
+    group_by: ["creation month"]
     period: "creation date"
   expected: [res_partner]
