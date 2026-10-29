@@ -237,3 +237,7 @@ data/private/
 
 # Sorties des benchmarks (régénérées)
 benchmark/out/
+
+# Données et fichiers d'enrichissement locaux
+datasets/
+enrichment/
