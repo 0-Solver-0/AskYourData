@@ -397,6 +397,28 @@
         },
         "url": "{{base_url}}/api/v1/llm/test"
       }
+    },
+    {
+      "name": "19. PREP — découpage + schéma (top customers)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"question\": \"Top 5 customers by revenue this year\",\n  \"account_id\": {{account_id}}\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": "{{base_url}}/api/v1/structure"
+      }
     }
   ]
 }

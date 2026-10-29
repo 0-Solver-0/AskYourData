@@ -58,6 +58,7 @@ WORKDIR /app
 COPY schema_service/ ./schema_service/
 COPY api_service/    ./api_service/
 COPY config/         ./config/
+COPY prompts/        ./prompts/
 
 ENV PYTHONPATH=/app \
     OMP_NUM_THREADS=8 \
