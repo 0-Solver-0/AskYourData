@@ -222,6 +222,25 @@ curl -X POST http://localhost:5000/api/v1/llm/test -H "Content-Type: application
   -d '{"role": "prep", "prompt": "Reply with the single word OK."}'     # appel réel
 ```
 
+## Découpage de la question (rôle PREP)
+
+`POST /api/v1/structure` découpe une question avec le prompt [`prompts/prep_structure.md`](prompts/prep_structure.md) (le bloc `text` est lu tel quel). Le modèle ne voit que la question, jamais le schéma.
+
+```bash
+curl -X POST http://localhost:5000/api/v1/structure -H "Content-Type: application/json" \
+  -d '{"question": "Top 5 customers by revenue this year", "account_id": 1}'
+```
+
+- `status` : `ok`, `write_request`, `out_of_scope`, `ambiguous` (avec `reason`), ou `degraded` si PREP ne répond pas : la question entière sert alors de sujet.
+- Avec `account_id`, la recherche structurée est lancée sur le découpage et le schéma est renvoyé (`schema`).
+- Télémétrie de l'appel dans `llm` (modèle, tokens, coût) ; temps par étape dans `timings_ms`.
+
+Mesure sur un fichier de questions, puis recherche sur le découpage obtenu :
+```bash
+python benchmark/prep_eval.py --file benchmark/unseen_questions.yaml
+python benchmark/schema_search_eval.py --file benchmark/out/prep_unseen_questions.yaml --verbose
+```
+
 ## Annotations
 
 ```bash

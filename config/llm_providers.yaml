@@ -28,7 +28,7 @@ meta_spark:
   timeout_s: 90
   price_per_mtok: {input: 1.25, cached_input: 0.15, output: 4.25}
 
-# Muse Spark Open sur Baseten (crédits du hackathon) — testé le 29/10/2026 avec reasoning_effort=low
+# Muse Spark Open (30B) sur Baseten (crédits du hackathon) — testé le 29/10/2026 avec reasoning_effort=low
 baseten_spark_open:
   base_url: https://inference.baseten.co/v1
   model: meta-models/muse-spark-open-1026

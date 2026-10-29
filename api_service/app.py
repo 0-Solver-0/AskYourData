@@ -22,6 +22,7 @@ Endpoints :
   POST /api/v1/schema/import    — applique un fichier d'enrichissement (dry_run possible)
   GET  /api/v1/llm              — profils LLM choisis par rôle (sans secret)
   POST /api/v1/llm/test         — appel réel d'un rôle (vérifie la clé et le modèle)
+  POST /api/v1/structure        — rôle PREP : question → découpage (et schéma si account_id)
 """
 
 import logging
@@ -31,6 +32,7 @@ import requests
 from flask import Flask, jsonify, request
 
 from api_service.llm import ROLES, LLMClient, LLMError
+from api_service.prep import structure_question
 
 # ── Logging ────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -302,6 +304,42 @@ def schema_structured():
     if not data.get("account_id") or not data.get("structured"):
         return jsonify({"error": "'account_id' et 'structured' obligatoires"}), 400
     return _proxy("POST", "/select/structured", json={**data, "debug": True})
+
+
+@app.post("/api/v1/structure")
+def structure():
+    """
+    Rôle PREP : découpe la question (sujet, mesures, filtres, regroupements, période, tri).
+    Body : {"question": "...", "account_id": 1 (facultatif), "reasoning": "low" (facultatif)}
+    Avec account_id, la recherche structurée est lancée sur le découpage et le schéma est renvoyé.
+    """
+    import time
+    data = request.get_json(silent=True) or {}
+    question = (data.get("question") or "").strip()
+    if not question:
+        return jsonify({"error": "'question' obligatoire"}), 400
+    t0 = time.time()
+    try:
+        client = get_llm()
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"error": f"Configuration LLM invalide : {exc}"}), 500
+    out = {"question": question, **structure_question(client, question, reasoning=data.get("reasoning"))}
+    timings = {"structuring": int((time.time() - t0) * 1000)}
+
+    account_id = data.get("account_id")
+    if account_id and out["status"] in ("ok", "degraded"):
+        t1 = time.time()
+        try:
+            resp = requests.post(f"{SCHEMA_SERVICE_URL}/select/structured", timeout=60,
+                                 json={"account_id": account_id, "question": question,
+                                       "structured": out["structured"], "debug": bool(data.get("debug"))})
+            out["schema"] = resp.json()
+        except Exception as exc:  # noqa: BLE001
+            out["schema"] = {"error": f"schema_service : {exc}"}
+        timings["schema"] = int((time.time() - t1) * 1000)
+    timings["total"] = int((time.time() - t0) * 1000)
+    out["timings_ms"] = timings
+    return jsonify(out)
 
 
 @app.post("/api/v1/translate")
