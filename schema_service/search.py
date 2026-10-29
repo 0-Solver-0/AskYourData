@@ -438,6 +438,10 @@ def column_comment(col: dict) -> str:
     if col.get("data_type") == "jsonb" and (
             col["column_name"] in ("name", "description") or col.get("odoo_type") in ("char", "text", "html")):
         parts.append("translatable JSON: use ->>'en_US'")
+    elif col.get("data_type") == "jsonb" and col.get("odoo_type") in ("float", "integer", "monetary", "boolean",
+                                                                      "many2one", "selection"):
+        # Champ Odoo « company dependent » : une valeur par société, clé = id de la société
+        parts.append("per-company JSON: value under the company id key, e.g. (col->>'1')::numeric")
     return " ".join(parts)
 
 
