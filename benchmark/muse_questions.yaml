@@ -1,0 +1,93 @@
+# Découpage produit par Muse Spark (meta-models/muse-spark-open-1026, reasoning_effort low),
+# repris tel quel. Seules les tables attendues ont été ajoutées à la main.
+# Lancer : python benchmark/schema_search_eval.py --file benchmark/muse_questions.yaml --verbose
+
+- question: "Revenue by product category last month"
+  structured:
+    subject: "sales orders"
+    measures: ["revenue"]
+    filters: []
+    group_by: ["product category"]
+    period: "order date"
+  expected: [[sale_order_line, account_move_line], product_category]
+
+- question: "Number of open opportunities per sales team"
+  structured:
+    subject: "opportunities"
+    measures: []
+    filters: ["opportunity status"]
+    group_by: ["sales team"]
+  expected: [crm_lead, crm_team]
+
+- question: "Customers who have not paid their invoices for more than 60 days"
+  structured:
+    subject: "customer invoices"
+    measures: []
+    filters: ["payment status", "days overdue"]
+    group_by: []
+  expected: [account_move, res_partner]
+
+# Piège : pas de transporteur dans la base de démo
+- question: "Average delivery delay per carrier this year"
+  structured:
+    subject: "deliveries"
+    measures: ["average delivery delay"]
+    filters: []
+    group_by: ["carrier"]
+    period: "delivery date"
+  expected: [stock_picking]
+
+- question: "Top 3 salespeople by number of confirmed orders in 2025"
+  structured:
+    subject: "sales orders"
+    measures: []
+    filters: ["order status"]
+    group_by: ["salesperson"]
+    period: "order date"
+    order: "order count desc, top 3"
+  expected: [sale_order, res_users]
+
+- question: "Total purchase amount per product this quarter"
+  structured:
+    subject: "purchase orders"
+    measures: ["total purchase amount"]
+    filters: []
+    group_by: ["product"]
+    period: "order date"
+  expected: [purchase_order_line, [product_product, product_template]]
+
+# Piège : pas de date d'embauche dans hr_employee
+- question: "How many employees joined each department this year"
+  structured:
+    subject: "employees"
+    measures: []
+    filters: []
+    group_by: ["department"]
+    period: "hire date"
+  expected: [hr_employee, hr_department]
+
+- question: "Products that are out of stock in the main warehouse"
+  structured:
+    subject: "stock on hand"
+    measures: []
+    filters: ["stock quantity", "warehouse"]
+    group_by: []
+  expected: [stock_quant, [stock_warehouse, stock_location], [product_product, product_template]]
+
+- question: "Credit notes issued to customers in France this year"
+  structured:
+    subject: "credit notes"
+    measures: []
+    filters: ["country"]
+    group_by: []
+    period: "issue date"
+  expected: [account_move, res_partner, res_country]
+
+- question: "Monthly number of new customers in 2025"
+  structured:
+    subject: "customers"
+    measures: []
+    filters: []
+    group_by: ["month"]
+    period: "creation date"
+  expected: [res_partner]

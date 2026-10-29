@@ -240,6 +240,8 @@ def structured_params() -> structured.StructuredParams:
         matches_per_piece=int(os.getenv("STRUCTURED_MATCHES_PER_PIECE", "2")),
         subject_margin=float(os.getenv("STRUCTURED_SUBJECT_MARGIN", "0.06")),
         check_types=os.getenv("STRUCTURED_CHECK_TYPES", "true").lower() not in ("0", "false", "no"),
+        min_similarity=float(os.getenv("STRUCTURED_MIN_SIMILARITY", "0.6")),
+        table_piece_min=float(os.getenv("STRUCTURED_TABLE_PIECE_MIN", "0.6")),
         token_budget=int(os.getenv("SCHEMA_TOKEN_BUDGET", "3000")),
     )
 
@@ -271,6 +273,9 @@ def select_structured():
         pieces = sq.pieces()
         subject_vec = embedder.embed_query(sq.subject, "tables")
         piece_vecs  = embedder.embed_queries([text for _, text in pieces], "columns")
+        # Regroupements comparés aussi aux fiches de tables (« product category » → product_category)
+        group_idx = [i for i, (role, _) in enumerate(pieces) if role == "group_by"]
+        group_vecs = embedder.embed_queries([pieces[i][1] for i in group_idx], "tables") if group_idx else []
 
         conn = get_conn()
         try:
@@ -281,13 +286,17 @@ def select_structured():
             table_sims = {c.table_name: c.vector_score for c in candidates}
             names = sorted(table_sims, key=table_sims.get, reverse=True)[:params.candidate_tables]
             column_sims = column_similarities(conn, account_id, names, piece_vecs)
+            piece_table_sims: list[dict[str, float]] = [{} for _ in pieces]
+            for i, vec in zip(group_idx, group_vecs):
+                piece_table_sims[i] = {r["table_name"]: r["similarity"]
+                                       for r in vector_ranking(conn, account_id, vec, limit=5)}
         finally:
             conn.close()
 
         value_text = question or " ".join([sq.subject, *sq.filters])
         value_matches = search.match_values(value_text, values)
         plan = structured.plan_structured(sq, table_sims, column_sims, tables_by_name, columns_by_table,
-                                          relations, params, value_matches)
+                                          relations, params, value_matches, piece_table_sims)
         elapsed = round(time.time() - t0, 3)
         logger.info("✅ Select structuré en %ss | %d tables | ~%d tokens",
                     elapsed, len(plan["tables"]), plan["token_estimate"])

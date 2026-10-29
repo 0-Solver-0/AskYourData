@@ -6,8 +6,9 @@ from schema_service import search, structured
 from tests.test_search import VALUES, build_inputs
 
 
-def run(sq_dict, table_sims, piece_sims, question=None, params=None):
-    """piece_sims : {(table, colonne): {texte du morceau: similarité}} ; 0,1 par défaut."""
+def run(sq_dict, table_sims, piece_sims, question=None, params=None, table_piece_sims=None):
+    """piece_sims : {(table, colonne): {texte du morceau: similarité}} ; 0,1 par défaut.
+    table_piece_sims : {texte du morceau: {table: similarité}} (fiches de tables)."""
     sq = structured.StructuredQuestion.from_dict(sq_dict)
     _, tables, cols, rels = build_inputs()
     texts = [t for _, t in sq.pieces()]
@@ -15,8 +16,10 @@ def run(sq_dict, table_sims, piece_sims, question=None, params=None):
                    for t, cs in cols.items() for c in cs}
     sims = {t: table_sims.get(t, 0.2) for t in tables}
     matches = search.match_values(question or " ".join([sq.subject, *sq.filters]), VALUES)
+    per_piece = [(table_piece_sims or {}).get(x, {}) for x in texts]
     return structured.plan_structured(sq, sims, column_sims, tables, cols, rels,
-                                      params or structured.StructuredParams(), matches)
+                                      params or structured.StructuredParams(min_similarity=0.5), matches,
+                                      per_piece)
 
 
 def names(plan):
@@ -80,7 +83,7 @@ def test_pieces_report_their_best_columns():
     assert by_text["customer"]["subject_first"] is True
     assert [m["table"] for m in by_text["salesperson"]["matches"]] == ["account_move"]
     # Sans la règle, la seconde correspondance presque aussi bonne revient
-    loose = run(UNPAID, {"account_move": 0.6}, UNPAID_SIMS, params=structured.StructuredParams(subject_margin=-1))
+    loose = run(UNPAID, {"account_move": 0.6}, UNPAID_SIMS, params=structured.StructuredParams(subject_margin=-1, min_similarity=0.5))
     by_text = {p["text"]: p for p in loose["pieces"]}
     assert [m["table"] for m in by_text["customer"]["matches"]] == ["sale_order", "account_move"]
 
@@ -161,8 +164,35 @@ def test_hand_written_questions_are_valid():
     for case in cases:
         structured.StructuredQuestion.from_dict(case["structured"])
         assert case["expected"]
-    unseen = yaml.safe_load(open(os.path.join(os.path.dirname(path), "unseen_questions.yaml"), encoding="utf-8"))
-    assert len(unseen) == 10
-    for case in unseen:
+    for name in ("unseen_questions.yaml", "muse_questions.yaml"):
+        extra = yaml.safe_load(open(os.path.join(os.path.dirname(path), name), encoding="utf-8"))
+        assert len(extra) == 10
+        cases += extra
+    for case in cases:
         structured.StructuredQuestion.from_dict(case["structured"])
         assert case["expected"]
+
+
+def test_weak_piece_is_reported_not_found():
+    sq = {"subject": "employees", "period": "hire date"}
+    plan = run(sq, {"account_move": 0.6}, {("account_move", "invoice_date"): {"hire date": 0.56}},
+               params=structured.StructuredParams())
+    assert plan["pieces"][0]["not_found"] is True and plan["pieces"][0]["matches"] == []
+
+
+def test_creation_date_is_allowed_for_a_period_only():
+    _, _, cols, _ = build_inputs()
+    created = {"column_name": "create_date", "data_type": "timestamp without time zone", "is_pk": False}
+    assert structured._usable(created, "period") and not structured._usable(created, "group_by")
+
+
+def test_group_by_naming_a_table_brings_it_with_its_path():
+    # « salesperson » ressemble à la fiche de res_users : la table vient avec le chemin depuis le sujet
+    sq = {"subject": "customer invoices", "group_by": ["salesperson"]}
+    plan = run(sq, {"account_move": 0.6}, {}, table_piece_sims={"salesperson": {"res_users": 0.7, "crm_team": 0.5}})
+    found = names(plan)
+    assert found["res_users"] == "group_by-table:salesperson"
+    assert plan["pieces"][0]["table_match"] == {"table": "res_users", "similarity": 0.7}
+    # Trop faible : rien n'est ajouté
+    plan = run(sq, {"account_move": 0.6}, {}, table_piece_sims={"salesperson": {"res_users": 0.55}})
+    assert "res_users" not in names(plan)

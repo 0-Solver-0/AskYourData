@@ -22,7 +22,7 @@
 | D10 | **Abandon de la sélection par couverture mot par mot** (« mode coverage », PR #10–#11, retiré le 29/10). | Un mot isolé ne veut rien dire pour un embedder. Mesures archivées dans `benchmark/HISTORY.md`. |
 | D11 | **Nouvelle forme de recherche** : la question est découpée en morceaux de sens (sujet, mesure, filtres, regroupements, période), chacun cherché au bon endroit (tables ou colonnes), contre des fiches rédigées dans la même forme. Validée d'abord **à la main**, puis produite par `PREP` (§ 5.1). | La recherche actuelle (« legacy », règles et synonymes) reste en place comme référence jusqu'à ce que la nouvelle forme fasse mieux. |
 | D12 | **Mesures mises en pause** pendant la mise au point de la nouvelle forme. | Historique : `benchmark/HISTORY.md`. |
-| D13 | **Forme courte et trois règles dans la recherche structurée** : morceaux réduits à l'attribut (sans sujet ni valeur), colonne compatible avec le rôle, table du sujet d'abord, valeur citée seulement si sa table est reliée. | Le bruit restant venait de colonnes prises hors du sujet ; l'enrichissement seul ne le corrigeait plus. Réglages : `STRUCTURED_CHECK_TYPES`, `STRUCTURED_SUBJECT_MARGIN`. |
+| D13 | **Forme courte et règles de la recherche structurée** : morceaux réduits à l'attribut (sans sujet ni valeur), colonne compatible avec le rôle, table du sujet d'abord, valeur citée seulement si sa table est reliée, morceau faible signalé « non trouvé », regroupement qui désigne une table. Découpage par PREP : `prompts/prep_structure.md`. | Le bruit restant venait de colonnes prises hors du sujet ; l'enrichissement seul ne le corrigeait plus. Réglages : `STRUCTURED_CHECK_TYPES`, `STRUCTURED_SUBJECT_MARGIN`, `STRUCTURED_MIN_SIMILARITY`, `STRUCTURED_TABLE_PIECE_MIN`. |
 
 ---
 
