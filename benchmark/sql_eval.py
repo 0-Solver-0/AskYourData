@@ -92,6 +92,8 @@ def main() -> int:
             lines.append(f"- manque : {data['missing']}")
         if data.get("reason"):
             lines.append(f"- raison : {data['reason']}")
+        if data.get("raw"):
+            lines += ["", "Réponse brute du modèle :", "", "```", data["raw"], "```"]
         if data.get("sql"):
             lines += ["", "```sql", data["sql"], "```"]
         if data.get("schema_ddl"):

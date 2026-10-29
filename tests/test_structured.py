@@ -308,3 +308,23 @@ def test_missing_word_not_found_is_reported():
     assert not extra_cols and not extra_tabs
     assert report == [{"text": "carrier", "found": None, "table": "account_move", "column": "partner_id",
                        "similarity": 0.55}]
+
+
+def test_missing_word_keeps_the_best_column_of_the_selected_tables_too():
+    # « manager » : hr_department.manager_id (voisine) est meilleure, mais la colonne du sujet compte aussi
+    _, tables, cols, rels = build_inputs()
+    extra_cols, _, report = structured.find_missing(
+        ["payment amount"], ["account_move"],
+        {("account_payment", "amount"): [0.82], ("account_move", "amount_total"): [0.7]},
+        [{}], tables, cols, rels, structured.StructuredParams())
+    assert set(extra_cols) == {("account_move", "amount_total"), ("account_payment", "amount")}
+    assert (report[0]["table"], report[0]["column"]) == ("account_move", "amount_total")
+    assert report[0]["also"] == [{"table": "account_payment", "column": "amount", "similarity": 0.82}]
+
+
+def test_per_company_json_columns_are_flagged():
+    comment = search.column_comment({"column_name": "standard_price", "data_type": "jsonb", "odoo_type": "float",
+                                     "odoo_label": "Cost"})
+    assert "per-company JSON" in comment and "translatable" not in comment
+    assert "translatable JSON" in search.column_comment({"column_name": "name", "data_type": "jsonb",
+                                                         "odoo_type": "char"})

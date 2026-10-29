@@ -198,13 +198,26 @@ def find_missing(phrases: list[str], selected: list[str], column_sims: dict[tupl
     for i, text in enumerate(phrases):
         scored = sorted(((float(sims[i]), t, c) for (t, c), sims in column_sims.items()
                          if i < len(sims) and (t, c) in usable), reverse=True)
-        if scored and scored[0][0] >= params.min_similarity and \
-                (scored[0][1] in selected or scored[0][1] in new_tables or len(new_tables) < max_new_tables):
-            sim, t, c = scored[0]
-            extra_columns[(t, c)] = text
-            if t not in selected:
-                new_tables.add(t)
-            report.append({"text": text, "found": "column", "table": t, "column": c, "similarity": round(sim, 3)})
+        # La meilleure colonne d'une table déjà retenue ET la meilleure colonne tout court (si elles
+        # diffèrent) : « manager » → hr_employee.parent_id et hr_department.manager_id ; le modèle SQL
+        # choisit d'après les libellés et les notes. Quelques tokens de plus, moins de faux « manque ».
+        in_selected = next((x for x in scored if x[1] in selected), None)
+        picks = []
+        if in_selected and in_selected[0] >= params.min_similarity:
+            picks.append(in_selected)
+        if scored and scored[0] is not in_selected and scored[0][0] >= params.min_similarity and \
+                (scored[0][1] in new_tables or len(new_tables) < max_new_tables):
+            picks.append(scored[0])
+        if picks:
+            for sim, t, c in picks:
+                extra_columns[(t, c)] = text
+                if t not in selected:
+                    new_tables.add(t)
+            sim, t, c = picks[0]
+            entry = {"text": text, "found": "column", "table": t, "column": c, "similarity": round(sim, 3)}
+            if len(picks) > 1:
+                entry["also"] = [{"table": t2, "column": c2, "similarity": round(s2, 3)} for s2, t2, c2 in picks[1:]]
+            report.append(entry)
             continue
         sims = phrase_table_sims[i] if i < len(phrase_table_sims) else {}
         ranked = sorted(((v, t) for t, v in sims.items() if t in tables_by_name), reverse=True)
