@@ -17,12 +17,15 @@ Le découpage est écrit à la main pour l'instant ; il sera produit par le rôl
 Étapes (fonctions pures : les similarités sont calculées par le service et passées en entrée) :
   1. le sujet classe les tables ; les meilleures forment la liste des candidates ;
   2. chaque morceau (mesure, filtre, regroupement, période) est cherché parmi les colonnes
-     des candidates ; on garde ses meilleures correspondances ;
+     des candidates dont le type convient au rôle (mesure → nombre, période → date…) ;
+     la table du sujet passe d'abord : une colonne d'une autre table n'est prise que si elle
+     bat nettement la meilleure colonne du sujet ; on garde ses meilleures correspondances ;
   3. tables retenues : la première du sujet, plus celles qui portent une colonne retenue ;
   4. une colonne retenue qui est une clé étrangère amène sa table cible (pour les noms) ;
      une table cible sans colonne de nom suit sa clé obligatoire vers une table qui en a
      (res_users → partner_id → res_partner) ;
-  5. jointures entre tables retenues (graphe des clés étrangères), valeurs citées ;
+  5. jointures entre tables retenues (graphe des clés étrangères) ; une valeur citée n'ajoute
+     sa table que si celle-ci est reliée directement à une table retenue ;
   6. schéma minimal : clé primaire, colonnes retenues, clés de jointure, colonne de nom.
 """
 
@@ -43,6 +46,16 @@ from .search import (
 )
 
 NAME_COLUMNS = ("name", "display_name", "complete_name")
+
+# Genre d'une colonne → rôles qui peuvent la prendre (filtre : tous les genres)
+ROLE_KINDS = {
+    "measure":  {"number"},
+    "period":   {"date"},
+    "group_by": {"relation", "text", "date", "boolean"},
+    "filter":   {"number", "relation", "text", "date", "boolean"},
+}
+NUMBER_TYPES = {"monetary", "float", "integer"}
+DATE_TYPES = {"date", "datetime"}
 PIECE_ROLES = ("measures", "filters", "group_by", "period")
 
 
@@ -91,13 +104,38 @@ class StructuredParams:
     subject_tables: int = 1          # premières tables du sujet toujours gardées
     matches_per_piece: int = 2       # correspondances gardées par morceau (un peu de marge)…
     second_match_ratio: float = 0.95  # … si elles atteignent ce ratio de la meilleure (sinon : bruit)
-    subject_bonus: float = 0.05      # à égalité, une colonne de la table du sujet passe devant
+    subject_bonus: float = 0.0       # avantage ajouté aux colonnes du sujet pour le classement
+    subject_margin: float = 0.06     # sujet d'abord : une autre table doit battre le sujet d'au moins ça
+    check_types: bool = True         # le genre de la colonne doit convenir au rôle du morceau
     token_budget: int = 3000
 
 
 def _usable(col: dict) -> bool:
     return (not col.get("is_pk") and col["column_name"] not in NOISE_COLUMNS
             and col["column_name"] not in TECHNICAL_FK_COLUMNS)
+
+
+def column_kind(col: dict) -> str:
+    """number, date, boolean, relation ou text — d'après le type Odoo, sinon le type SQL."""
+    odoo_type = (col.get("odoo_type") or "").lower()
+    data_type = (col.get("data_type") or "").lower()
+    if col.get("is_fk") or odoo_type in ("many2one", "many2one_reference"):
+        return "relation"
+    if odoo_type in NUMBER_TYPES:
+        return "number"
+    if odoo_type in DATE_TYPES:
+        return "date"
+    if odoo_type == "boolean":
+        return "boolean"
+    if odoo_type:
+        return "text"
+    if data_type.startswith(("numeric", "double", "real", "integer", "bigint", "smallint")):
+        return "number"
+    if data_type.startswith(("date", "timestamp")):
+        return "date"
+    if data_type == "boolean":
+        return "boolean"
+    return "text"
 
 
 def _name_column(columns: list[dict]) -> Optional[str]:
@@ -120,9 +158,11 @@ def plan_structured(sq: StructuredQuestion, table_sims: dict[str, float],
         return {"tables": [], "schema_ddl": "", "token_estimate": 0, "relations": [], "pieces": [],
                 "subject_ranking": []}
 
-    # 2. Meilleures colonnes de chaque morceau, parmi les colonnes des tables candidates.
-    #    Les colonnes de la table du sujet ont un léger avantage ; une correspondance suivante
-    #    n'est gardée que si elle est presque aussi bonne que la meilleure.
+    # 2. Meilleures colonnes de chaque morceau, parmi les colonnes des tables candidates :
+    #    - seules les colonnes dont le genre convient au rôle (s'il en existe au moins une) ;
+    #    - sujet d'abord : si la table du sujet a une colonne presque aussi bonne que la meilleure
+    #      (écart ≤ subject_margin), on ne garde que les colonnes du sujet ;
+    #    - une correspondance suivante n'est gardée que si elle est presque aussi bonne.
     subject_set = set(ranking[:params.subject_tables])
     piece_matches = []
     for i, (role, text) in enumerate(pieces):
@@ -133,13 +173,24 @@ def plan_structured(sq: StructuredQuestion, table_sims: dict[str, float],
                 if sims and i < len(sims) and _usable(col):
                     sim = float(sims[i])
                     bonus = params.subject_bonus if table in subject_set else 0.0
-                    scored.append((sim + bonus, sim, table, col["column_name"]))
+                    scored.append((sim + bonus, sim, table, col["column_name"], column_kind(col)))
+        type_checked = False
+        if params.check_types:
+            allowed = ROLE_KINDS.get(role)
+            typed = [x for x in scored if allowed is None or x[4] in allowed]
+            if typed and len(typed) < len(scored):
+                scored, type_checked = typed, True
         scored.sort(reverse=True)
+        subject_first = False
+        in_subject = [x for x in scored if x[2] in subject_set]
+        if in_subject and scored and in_subject[0][1] >= scored[0][1] - params.subject_margin:
+            subject_first = len(in_subject) < len(scored)
+            scored = in_subject
         kept = [x for k, x in enumerate(scored[:params.matches_per_piece])
                 if k == 0 or x[0] >= params.second_match_ratio * scored[0][0]]
         piece_matches.append({
-            "role": role, "text": text,
-            "matches": [{"table": t, "column": c, "similarity": round(sim, 3)} for _, sim, t, c in kept],
+            "role": role, "text": text, "type_checked": type_checked, "subject_first": subject_first,
+            "matches": [{"table": t, "column": c, "similarity": round(sim, 3)} for _, sim, t, c, _ in kept],
         })
 
     # 3. Tables retenues : début du classement du sujet + tables qui portent une colonne retenue
@@ -178,7 +229,18 @@ def plan_structured(sq: StructuredQuestion, table_sims: dict[str, float],
     graph = build_graph(relations)
     for t, why in join_tables(graph, main, max_hops=2).items():
         reasons.setdefault(t, why)
-    value_matches = [m for m in (value_matches or []) if m.table_name in tables_by_name]
+    # Une valeur citée annote une table retenue, ou ajoute une table reliée directement
+    # (clé étrangère dans un sens ou dans l'autre) à une table déjà retenue ; sinon elle est écartée.
+    selected_now = set(reasons)
+    linked_to_selected = {r["to_table"] for r in relations if r["from_table"] in selected_now} | \
+                         {r["from_table"] for r in relations if r["to_table"] in selected_now}
+    ignored_values: list[ValueMatch] = []
+    kept_values: list[ValueMatch] = []
+    for m in (value_matches or []):
+        if m.table_name not in tables_by_name:
+            continue
+        (kept_values if m.table_name in selected_now | linked_to_selected else ignored_values).append(m)
+    value_matches = kept_values
     for m in value_matches:
         reasons.setdefault(m.table_name, f"value:{m.table_name}.{m.column_name}")
         matched_cols.setdefault(m.table_name, set()).add(m.column_name)
@@ -235,4 +297,6 @@ def plan_structured(sq: StructuredQuestion, table_sims: dict[str, float],
         "subject_ranking": [{"table_name": t, "similarity": round(table_sims[t], 3)} for t in ranking[:10]],
         "value_matches": [{"table_name": m.table_name, "column_name": m.column_name, "value": m.value}
                           for m in value_matches],
+        "value_matches_ignored": [{"table_name": m.table_name, "column_name": m.column_name, "value": m.value}
+                                  for m in ignored_values],
     }

@@ -155,8 +155,8 @@ curl -X POST http://localhost:5000/api/v1/schema/structured -H "Content-Type: ap
   "question": "Customers with the highest unpaid invoice amount, by salesperson",
   "structured": {
     "subject":  "customer invoices",
-    "measures": ["amount still due on the invoice"],
-    "filters":  ["customer invoices only", "posted invoices", "invoice not fully paid"],
+    "measures": ["amount due"],
+    "filters":  ["document type", "status", "payment status"],
     "group_by": ["customer", "salesperson"],
     "order":    "unpaid amount desc"
   }
@@ -164,11 +164,15 @@ curl -X POST http://localhost:5000/api/v1/schema/structured -H "Content-Type: ap
 ```
 
 - **Sujet** : il classe les tables (consigne « tables » de l'embedder). Les 6 premières sont les candidates (`STRUCTURED_CANDIDATE_TABLES`).
-- **Mesures, filtres, regroupements, période** : chacun est cherché parmi les colonnes des candidates (consigne « columns »). On garde la meilleure colonne de chaque morceau, plus une seconde si elle est presque aussi bonne (`STRUCTURED_MATCHES_PER_PIECE`).
+- **Forme courte** : chaque morceau nomme l'attribut seul, en 1 à 3 mots, sans répéter le sujet ni citer la valeur (« status », pas « confirmed sales orders only »). Les valeurs (Morocco, posted…) et la période (this year…) restent dans la question. Une mesure de comptage laisse `measures` vide.
+- **Mesures, filtres, regroupements, période** : chacun est cherché parmi les colonnes des candidates (consigne « columns »). On garde la meilleure colonne de chaque morceau, plus une seconde si elle est presque aussi bonne (`STRUCTURED_MATCHES_PER_PIECE`). Trois règles limitent le bruit :
+  - **type** : une mesure prend un nombre ou un montant, une période une date, un regroupement tout sauf un nombre (`STRUCTURED_CHECK_TYPES`, activé par défaut) ;
+  - **sujet d'abord** : si la table du sujet a une colonne presque aussi bonne que la meilleure (écart ≤ `STRUCTURED_SUBJECT_MARGIN`, 0,06), les autres tables sont écartées pour ce morceau ;
+  - **valeurs citées** : une valeur n'ajoute sa table que si celle-ci est reliée par une clé étrangère à une table déjà retenue ; sinon elle est écartée et signalée dans le diagnostic.
 - **Tables gardées** : la première du sujet, celles qui portent une colonne retenue, et les tables visées par les clés étrangères retenues pour obtenir les noms. Une table sans colonne de nom suit sa clé obligatoire : `res_users → partner_id → res_partner`.
 - **Schéma minimal** : clé primaire, colonnes retenues, clés de jointure et colonne de nom, avec les notes de l'enrichissement.
 - **Réponse** : le schéma, plus le diagnostic (classement du sujet et colonnes trouvées pour chaque morceau).
-- **Les 12 questions découpées à la main** : [`benchmark/structured_questions.yaml`](benchmark/structured_questions.yaml), à lancer avec `python benchmark/schema_search_eval.py --file benchmark/structured_questions.yaml --verbose`.
+- **Les questions découpées à la main** : 12 dans [`benchmark/structured_questions.yaml`](benchmark/structured_questions.yaml) et 10 jamais réglées dans [`benchmark/unseen_questions.yaml`](benchmark/unseen_questions.yaml), à lancer avec `python benchmark/schema_search_eval.py --file <fichier> --verbose`.
 
 Les fiches ont été réécrites dans la même forme. Une table enrichie est décrite par son libellé, sa description et ses synonymes, sans liste de colonnes. Une colonne est décrite par son sens d'abord (libellé, synonymes, notes, aide, valeurs), et son nom technique en dernier. **Il faut réindexer une fois** après la mise à jour.
 

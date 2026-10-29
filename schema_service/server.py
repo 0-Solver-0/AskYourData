@@ -238,6 +238,8 @@ def structured_params() -> structured.StructuredParams:
         candidate_tables=int(os.getenv("STRUCTURED_CANDIDATE_TABLES", "6")),
         subject_tables=int(os.getenv("STRUCTURED_SUBJECT_TABLES", "1")),
         matches_per_piece=int(os.getenv("STRUCTURED_MATCHES_PER_PIECE", "2")),
+        subject_margin=float(os.getenv("STRUCTURED_SUBJECT_MARGIN", "0.06")),
+        check_types=os.getenv("STRUCTURED_CHECK_TYPES", "true").lower() not in ("0", "false", "no"),
         token_budget=int(os.getenv("SCHEMA_TOKEN_BUDGET", "3000")),
     )
 
@@ -307,6 +309,7 @@ def select_structured():
                 "pieces": plan["pieces"],
                 "tables": plan["tables"],
                 "value_matches": plan["value_matches"],
+                "value_matches_ignored": plan["value_matches_ignored"],
             }
         return jsonify(response)
 

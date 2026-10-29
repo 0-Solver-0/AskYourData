@@ -75,9 +75,53 @@ def test_pieces_report_their_best_columns():
     by_text = {p["text"]: p for p in plan["pieces"]}
     assert by_text["unpaid amount"]["matches"][0] == {"table": "account_move", "column": "amount_residual",
                                                       "similarity": 0.72}
-    # Seconde correspondance gardée seulement si elle est presque aussi bonne que la première
-    assert [m["table"] for m in by_text["customer"]["matches"]] == ["account_move", "sale_order"]
+    # Sujet d'abord : sale_order.partner_id (0,60) ne bat pas assez account_move.partner_id (0,58)
+    assert [m["table"] for m in by_text["customer"]["matches"]] == ["account_move"]
+    assert by_text["customer"]["subject_first"] is True
     assert [m["table"] for m in by_text["salesperson"]["matches"]] == ["account_move"]
+    # Sans la règle, la seconde correspondance presque aussi bonne revient
+    loose = run(UNPAID, {"account_move": 0.6}, UNPAID_SIMS, params=structured.StructuredParams(subject_margin=-1))
+    by_text = {p["text"]: p for p in loose["pieces"]}
+    assert [m["table"] for m in by_text["customer"]["matches"]] == ["sale_order", "account_move"]
+
+
+def test_column_kinds():
+    _, _, cols, _ = build_inputs()
+    kinds = {c["column_name"]: structured.column_kind(c) for c in cols["account_move"]}
+    assert kinds["amount_residual"] == "number" and kinds["invoice_date"] == "date"
+    assert kinds["partner_id"] == "relation" and kinds["move_type"] == "text"
+    assert structured.column_kind({"column_name": "x", "data_type": "boolean"}) == "boolean"
+    assert structured.column_kind({"column_name": "x", "data_type": "integer", "odoo_type": "many2one"}) == "relation"
+
+
+def test_measure_takes_a_number_and_period_a_date():
+    sq = {"subject": "customer invoices", "measures": ["amount due"], "period": "due date"}
+    sims = {("account_move", "invoice_date"): {"amount due": 0.79, "due date": 0.8},   # date proche du texte
+            ("account_move", "amount_residual"): {"amount due": 0.77, "due date": 0.5}}
+    plan = run(sq, {"account_move": 0.6}, sims)
+    by_text = {p["text"]: p for p in plan["pieces"]}
+    assert by_text["amount due"]["matches"][0]["column"] == "amount_residual"
+    assert by_text["amount due"]["type_checked"] is True
+    assert by_text["due date"]["matches"][0]["column"] == "invoice_date"
+    unchecked = run(sq, {"account_move": 0.6}, sims, params=structured.StructuredParams(check_types=False))
+    assert {p["text"]: p for p in unchecked["pieces"]}["amount due"]["matches"][0]["column"] == "invoice_date"
+
+
+def test_another_table_wins_only_by_a_clear_margin():
+    sq = {"subject": "customer invoices", "group_by": ["customer"]}
+    sims = {("account_move", "partner_id"): {"customer": 0.58}, ("sale_order", "partner_id"): {"customer": 0.70}}
+    plan = run(sq, {"account_move": 0.6, "sale_order": 0.5}, sims)
+    assert plan["pieces"][0]["matches"][0]["table"] == "sale_order"       # 0,12 d'écart > 0,06
+    assert plan["pieces"][0]["subject_first"] is False
+
+
+def test_unrelated_cited_value_is_ignored():
+    # « Qualified » est une étape du CRM : sans lien avec les factures, la valeur n'ajoute pas crm_stage
+    sq = {"subject": "customer invoices", "measures": ["amount due"]}
+    plan = run(sq, {"account_move": 0.6}, {("account_move", "amount_residual"): {"amount due": 0.7}},
+               question="Amount due on invoices of Qualified deals")
+    assert "crm_stage" not in names(plan)
+    assert {v["table_name"] for v in plan["value_matches_ignored"]} == {"crm_stage"}
 
 
 def test_candidate_tables_limit_the_column_search():
@@ -115,5 +159,10 @@ def test_hand_written_questions_are_valid():
     cases = yaml.safe_load(open(path, encoding="utf-8"))
     assert len(cases) == 12
     for case in cases:
+        structured.StructuredQuestion.from_dict(case["structured"])
+        assert case["expected"]
+    unseen = yaml.safe_load(open(os.path.join(os.path.dirname(path), "unseen_questions.yaml"), encoding="utf-8"))
+    assert len(unseen) == 10
+    for case in unseen:
         structured.StructuredQuestion.from_dict(case["structured"])
         assert case["expected"]
