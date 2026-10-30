@@ -207,6 +207,24 @@ def _path_from_selected(graph: dict, selected: list[str], target: str, max_hops:
     return best
 
 
+def _words(text: str) -> set[str]:
+    """Mots simples, au singulier grossier (« categories » → « categori », « teams » → « team »)."""
+    out = set()
+    for w in re.findall(r"[a-z]+", (text or "").lower()):
+        if len(w) > 3 and w.endswith("ies"):
+            w = w[:-3] + "y"
+        elif len(w) > 3 and w.endswith("s") and not w.endswith("ss"):
+            w = w[:-1]
+        out.add(w)
+    return out
+
+
+def _label_covers(col: dict, text: str) -> bool:
+    """Le libellé (ou le nom) de la colonne contient-il tous les mots du morceau ?"""
+    label = " ".join(str(col.get(k) or "") for k in ("label", "odoo_label", "synonyms", "column_name"))
+    return bool(_words(text)) and _words(text) <= _words(label.replace("_", " "))
+
+
 def line_table(subject: str, relations: list[dict], tables_by_name: dict[str, dict]) -> Optional[str]:
     """Table des lignes d'un document (sale_order → sale_order_line) : <sujet>_line avec une clé vers le sujet."""
     child = f"{subject}_line"
@@ -430,7 +448,7 @@ def plan_structured(sq: StructuredQuestion, table_sims: dict[str, float],
     #        ajoute cette table et le chemin depuis le sujet, même à plusieurs liens.
     graph = build_graph(relations)
     forward = build_forward_graph(relations)
-    fk_columns = {(r["from_table"], r["from_column"]) for r in relations}
+    fk_targets = {(r["from_table"], r["from_column"]): r["to_table"] for r in relations}
     for i, pm in enumerate(piece_matches):
         sims = (piece_table_sims or [])[i] if piece_table_sims and i < len(piece_table_sims) else {}
         if pm["role"] != "group_by" or not sims:
@@ -439,11 +457,16 @@ def plan_structured(sq: StructuredQuestion, table_sims: dict[str, float],
         pm["table_match"] = {"table": best, "similarity": round(sims[best], 3)} if best else None
         if not best or sims[best] < params.table_piece_min or best in reasons:
             continue
-        # Entité déjà résolue : la colonne trouvée est une clé étrangère du sujet
-        # (sale_order.team_id → crm_team) ; on n'ajoute pas une seconde table voisine.
+        # Entité déjà résolue : la colonne trouvée est une clé étrangère du sujet dont le libellé couvre
+        # tout le regroupement (« salesperson » → invoice_user_id « Salesperson », « sales team » →
+        # team_id « Sales Team ») ; on n'ajoute pas de table voisine. S'il reste un mot, le regroupement
+        # est un attribut de la cible : « product category » → product_id « Product » laisse « category »,
+        # donc product_category est ajoutée avec son chemin (ligne → produit → modèle → catégorie).
         top = pm["matches"][0] if pm["matches"] else None
-        if top and top["table"] in subject_set and (top["table"], top["column"]) in fk_columns:
-            continue
+        if top and top["table"] in subject_set and (top["table"], top["column"]) in fk_targets:
+            col = next((c for c in columns_by_table.get(top["table"], []) if c["column_name"] == top["column"]), {})
+            if _label_covers(col, pm["text"]):
+                continue
         path = _path_from_selected(graph, list(reasons), best, params.table_piece_hops, forward)
         if not path:
             continue
