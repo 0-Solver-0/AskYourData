@@ -115,6 +115,7 @@ Règle du hackathon : **tout modèle appelé à l'exécution est un modèle Meta
 | Rôle | Modèle | Éditeur | Où il tourne |
 |---|---|---|---|
 | Découpage de la question (PREP) | `meta-models/muse-spark-open-1026` (Muse Spark Open 30B) | Meta | API Baseten (`config/llm_providers.yaml`, profil `baseten_spark_open`) |
+| Choix de la table du sujet quand la recherche hésite (juge) | `meta-models/muse-spark-open-1026` | Meta | API Baseten (même profil que PREP) ; seulement si l'écart entre les 2 premières tables est sous `STRUCTURED_JUDGE_GAP` (0,05), réponse limitée aux 8 candidates |
 | Génération et correction du SQL | `muse-spark-1.3` (Muse Spark 1.3) | Meta | API Meta (`meta_spark`) |
 | Question dictée → texte | `muse-voice-transcribe-1.0` (Muse Voice Transcribe) | Meta | API Meta (`meta_voice`) |
 | Recherche des tables et colonnes (embeddings) | `facebook/contriever-msmarco` (Contriever) | **Meta AI, modèle ouvert** | **en local**, sur CPU, dans le conteneur `schema_service` (`./models/contriever-msmarco`) |

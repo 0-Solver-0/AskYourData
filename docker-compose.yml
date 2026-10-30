@@ -149,6 +149,8 @@ services:
       META_API_KEY:        ${META_API_KEY:-}
       BASETEN_API_KEY:     ${BASETEN_API_KEY:-}
       LOCAL_API_KEY:       ${LOCAL_API_KEY:-}
+      # Juge du sujet (Muse Spark 30B) : appelé si l'écart 1re–2e table est sous ce seuil (0 = jamais)
+      STRUCTURED_JUDGE_GAP: ${STRUCTURED_JUDGE_GAP:-0.05}
       # Question dictée (profil dans config/llm_providers.yaml, clé META_API_KEY)
       VOICE_PROVIDER:      ${VOICE_PROVIDER:-}
       VOICE_LANGUAGES:     ${VOICE_LANGUAGES:-}

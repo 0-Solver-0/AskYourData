@@ -20,6 +20,8 @@
     ["transcribe", "Voice to text", "--step-6"],
     ["structuring", "Understand", "--step-1"],
     ["schema", "Find tables", "--step-2"],
+    ["judge", "Pick main table", "--step-6"],
+    ["schema_2", "Find tables again", "--step-2"],
     ["generation", "Write SQL", "--step-3"],
     ["extend", "Find missing data", "--step-4"],
     ["generation_2", "Rewrite SQL", "--step-3"],
@@ -225,6 +227,14 @@
         for (const item of Array.isArray(v) ? v : [v]) pieces.push(el("span", {}, el("em", { text: human(k) }), String(item)));
       }
       if (pieces.length) blocks.push(el("div", {}, el("h3", { text: "How the question was understood" }), el("div", { class: "pieces" }, ...pieces)));
+    }
+    const choice = data.subject_choice;
+    if (choice && choice.table) {
+      const how = { judge: "chosen by the judge (Muse Spark)", header: "the document behind its lines",
+        forced: "chosen by the judge (Muse Spark)", vectors: "closest match" }[choice.by] || choice.by;
+      const text = `${choice.table}: ${how}` + (choice.reason ? ` — ${choice.reason}` : "")
+        + (choice.by === "judge" && choice.vectors && choice.vectors !== choice.table ? ` (closest match was ${choice.vectors})` : "");
+      blocks.push(el("div", {}, el("h3", { text: "Main table" }), el("p", { text })));
     }
     const sql = data.executed_sql || data.sql;
     if (sql) blocks.push(el("div", {}, el("h3", { text: data.executed_sql ? "Query that ran (read-only)" : "Query written, not run" }), el("pre", { class: "sql", text: sql })));
