@@ -368,3 +368,101 @@ def test_missing_word_without_a_column_of_the_right_kind_looks_for_a_table():
         ["scheduled date of the order"], ["account_move"], {("account_move", "move_type"): [0.8]}, [{}],
         tables, cols, rels, structured.StructuredParams())
     assert not extra_cols and report[0]["found"] is None
+
+
+# ── Structure : lignes du document, chemins orientés, jointures, manques ─────
+
+def sales_world():
+    """sale_order + lignes + produit → modèle → catégorie, et deux tables « parasites » qui ont aussi
+    un produit et une catégorie (règle de rangement, point de commande)."""
+    from tests.test_search import col
+    t = lambda name: {"table_name": name, "odoo_label": name}  # noqa: E731
+    cols = {
+        "sale_order": [col("id", pk=True), col("name", "character varying", "Order Reference"),
+                       col("user_id", label="Salesperson", fk=True), col("amount_total", "numeric", "Total",
+                                                                         odoo_type="monetary"),
+                       col("date_order", "timestamp without time zone", "Order Date", odoo_type="datetime")],
+        "sale_order_line": [col("id", pk=True), col("order_id", label="Order", fk=True),
+                            col("product_id", label="Product", fk=True),
+                            col("price_subtotal", "numeric", "Subtotal", odoo_type="monetary")],
+        "product_product": [col("id", pk=True), col("product_tmpl_id", label="Template", fk=True)],
+        "product_template": [col("id", pk=True), col("name", "jsonb", "Name", odoo_type="char"),
+                             col("categ_id", label="Product Category", fk=True)],
+        "product_category": [col("id", pk=True), col("name", "character varying", "Name")],
+        "stock_putaway_rule": [col("id", pk=True), col("product_id", label="Product", fk=True),
+                               col("category_id", label="Product Category", fk=True)],
+        "stock_warehouse_orderpoint": [col("id", pk=True), col("product_id", label="Product", fk=True),
+                                       col("product_category_id", label="Product Category", fk=True)],
+        "res_users": [col("id", pk=True), col("login", "character varying", "Login")],
+    }
+    rels = [{"from_table": a, "from_column": c, "to_table": b, "to_column": "id"} for a, c, b in (
+        ("sale_order", "user_id", "res_users"), ("sale_order_line", "order_id", "sale_order"),
+        ("sale_order_line", "product_id", "product_product"), ("product_product", "product_tmpl_id", "product_template"),
+        ("product_template", "categ_id", "product_category"),
+        ("stock_putaway_rule", "product_id", "product_product"), ("stock_putaway_rule", "category_id", "product_category"),
+        ("stock_warehouse_orderpoint", "product_id", "product_product"),
+        ("stock_warehouse_orderpoint", "product_category_id", "product_category"))]
+    return {n: t(n) for n in cols}, cols, rels
+
+
+def test_line_table_is_found_by_name_and_key():
+    tables, _, rels = sales_world()
+    assert structured.line_table("sale_order", rels, tables) == "sale_order_line"
+    assert structured.line_table("product_template", rels, tables) is None
+
+
+def test_forward_path_follows_the_keys_in_their_direction():
+    _, _, rels = sales_world()
+    graph, forward = search.build_graph(rels), structured.build_forward_graph(rels)
+    path = structured._path_from_selected(graph, ["sale_order", "sale_order_line"], "product_category", 4, forward)
+    assert path == ["sale_order_line", "product_product", "product_template", "product_category"]
+
+
+def test_revenue_by_category_brings_the_lines_and_only_the_real_path():
+    # Cas réel : 14 tables envoyées dont stock_putaway_rule, stock_warehouse_orderpoint… ; mesure absente
+    tables, cols, rels = sales_world()
+    sq = structured.StructuredQuestion.from_dict({"subject": "sales orders", "measures": ["revenue"],
+                                                  "group_by": ["product category"], "period": "order date"})
+    texts = [t for _, t in sq.pieces()]
+    sims = {(t, c["column_name"]): [0.1] * len(texts) for t, cs in cols.items() for c in cs}
+    sims[("sale_order_line", "price_subtotal")] = [0.75 if x == "revenue" else 0.1 for x in texts]
+    sims[("sale_order", "amount_total")] = [0.7 if x == "revenue" else 0.1 for x in texts]
+    sims[("sale_order", "date_order")] = [0.8 if x == "order date" else 0.1 for x in texts]
+    table_sims = {"sale_order": 0.7, "sale_order_line": 0.6, "stock_putaway_rule": 0.3}
+    per_piece = [{"product_category": 0.8} if x == "product category" else {} for x in texts]
+    plan = structured.plan_structured(sq, table_sims, sims, tables, cols, rels, structured.StructuredParams(),
+                                      None, per_piece)
+    found = names(plan)
+    assert found["sale_order_line"] == "lines:sale_order"
+    assert {"product_product", "product_template", "product_category"} <= set(found)
+    assert "stock_putaway_rule" not in found and "stock_warehouse_orderpoint" not in found
+    assert "price_subtotal" in columns(plan, "sale_order_line")
+
+
+def test_no_lines_for_a_plain_list():
+    tables, cols, rels = sales_world()
+    sq = structured.StructuredQuestion.from_dict({"subject": "quotations", "filters": ["status"]})
+    sims = {(t, c["column_name"]): [0.1] for t, cs in cols.items() for c in cs}
+    plan = structured.plan_structured(sq, {"sale_order": 0.7}, sims, tables, cols, rels, structured.StructuredParams())
+    assert "sale_order_line" not in names(plan)
+
+
+def test_missing_word_never_returns_a_column_already_sent():
+    # Cas réel : « received status » → sale_order.state, déjà dans le schéma
+    _, tables, cols, rels = build_inputs()
+    sims = {("account_move", "payment_state"): [0.8], ("account_move", "amount_residual"): [0.5]}
+    extra, _, report = structured.find_missing(["received status of the bill"], ["account_move"], sims, [{}],
+                                               tables, cols, rels, structured.StructuredParams(),
+                                               present={("account_move", "payment_state")})
+    assert ("account_move", "payment_state") not in extra and report[0]["found"] is None
+
+
+def test_missing_records_prefer_the_table_over_a_column():
+    # Cas réel : « supplier invoices and their amounts » → res_partner.supplier_rank au lieu de account_move
+    _, tables, cols, rels = build_inputs()
+    extra_cols, extra_tabs, report = structured.find_missing(
+        ["supplier invoices and their amounts"], ["purchase_order", "res_partner"],
+        {("res_partner", "customer_rank"): [0.62]}, [{"account_move": 0.71}], tables, cols, rels,
+        structured.StructuredParams())
+    assert extra_tabs == {"account_move": "supplier invoices and their amounts"} and not extra_cols
+    assert report[0]["found"] == "table"
