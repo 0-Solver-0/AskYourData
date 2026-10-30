@@ -125,7 +125,7 @@ def health():
         "services": statuses,
         "llm":      llm_status(),     # configuration seulement : aucun appel, aucun token
         "execution": executor.ping(),  # rôle PostgreSQL en lecture seule
-        "voice":    {k: v for k, v in voice.voice_config().items() if k in ("model", "languages", "api_key_set")},
+        "voice":    voice.voice_status(),
         "ready":    all_ok,
     })
 
