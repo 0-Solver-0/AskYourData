@@ -1,21 +1,23 @@
 :root {
-  --bg: #edf0f3;
+  /* Couleurs du logo : orange #FF5100, pêche #FAD3B6, orange clair #FF8A5C, noir, gris, blanc cassé */
+  --bg: #fcfcfa;
   --surface: #ffffff;
-  --ink: #18222e;
-  --muted: #5a6573;
-  --line: #d5dbe2;
-  --action: #2b59d9;
+  --ink: #141414;
+  --muted: #6b6b6b;
+  --line: #ece4dc;
+  --action: #ff5100;
   --action-ink: #ffffff;
-  --ok: #1c7a57;
-  --warn: #a8541c;
-  --warn-bg: #fbf1ea;
-  --code-bg: #f4f6f9;
-  --step-1: #2b59d9;
-  --step-2: #5b7fe3;
-  --step-3: #18222e;
-  --step-4: #8a96a6;
-  --step-5: #1c7a57;
-  --step-6: #c27a3a;
+  --action-text: #c43e00;
+  --ok: #141414;
+  --warn: #ff5100;
+  --warn-bg: #fff1e7;
+  --code-bg: #f7f4f0;
+  --step-1: #ff5100;
+  --step-2: #ff8a5c;
+  --step-3: #141414;
+  --step-4: #b5aca5;
+  --step-5: #fad3b6;
+  --step-6: #6b6b6b;
   --radius-lg: 14px;
   --radius-sm: 6px;
   --font: "Instrument Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
@@ -25,23 +27,24 @@
 
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --bg: #121820;
-    --surface: #1a222c;
-    --ink: #e7ecf2;
-    --muted: #9aa6b4;
-    --line: #2c3743;
-    --action: #6d8ff0;
-    --action-ink: #0d1420;
-    --ok: #4cc195;
-    --warn: #e59a62;
-    --warn-bg: #2a2119;
-    --code-bg: #141b23;
-    --step-1: #6d8ff0;
-    --step-2: #9db3f5;
-    --step-3: #e7ecf2;
-    --step-4: #66717f;
-    --step-5: #4cc195;
-    --step-6: #e59a62;
+    --bg: #141414;
+    --surface: #1d1b1a;
+    --ink: #f6f3f0;
+    --muted: #a59d97;
+    --line: #34302d;
+    --action: #ff5100;
+    --action-ink: #ffffff;
+    --action-text: #ff8a5c;
+    --ok: #f6f3f0;
+    --warn: #ff8a5c;
+    --warn-bg: #2a1d16;
+    --code-bg: #171615;
+    --step-1: #ff5100;
+    --step-2: #ff8a5c;
+    --step-3: #f6f3f0;
+    --step-4: #6e6661;
+    --step-5: #fad3b6;
+    --step-6: #a59d97;
     color-scheme: dark;
   }
 }
@@ -89,7 +92,7 @@ main { max-width: 1040px; margin: 0 auto; padding: 0 24px 80px; }
   display: flex; align-items: flex-end; gap: 12px;
   background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-lg);
   padding: 14px 14px 14px 20px;
-  box-shadow: 0 1px 0 rgba(24, 34, 46, 0.04), 0 12px 32px -18px rgba(24, 34, 46, 0.35);
+  box-shadow: 0 1px 0 rgba(20, 20, 20, 0.04), 0 12px 32px -18px rgba(255, 81, 0, 0.35);
 }
 .ask-box:focus-within { border-color: var(--action); }
 .ask-box textarea {
@@ -108,7 +111,7 @@ main { max-width: 1040px; margin: 0 auto; padding: 0 24px 80px; }
   background: var(--code-bg); color: var(--ink); border: 1px solid var(--line);
 }
 .mic svg { width: 22px; height: 22px; fill: currentColor; }
-.mic[aria-pressed="true"] { background: var(--warn); color: #fff; border-color: var(--warn); }
+.mic[aria-pressed="true"] { background: var(--action); color: #fff; border-color: var(--action); }
 .mic[aria-pressed="true"] svg { animation: beat 1.1s ease-in-out infinite; }
 .send { padding: 0 26px; background: var(--action); color: var(--action-ink); }
 .send:disabled, .mic:disabled { opacity: 0.5; cursor: progress; }
@@ -121,7 +124,7 @@ main { max-width: 1040px; margin: 0 auto; padding: 0 24px 80px; }
   border: 1px solid var(--line); background: transparent; color: var(--ink); border-radius: 999px;
   padding: 7px 14px; font: 500 14px var(--font); cursor: pointer;
 }
-.examples button:hover { border-color: var(--action); color: var(--action); }
+.examples button:hover { border-color: var(--action); color: var(--action-text); }
 
 /* Réponses */
 .answers { display: grid; gap: 22px; grid-template-columns: minmax(0, 1fr); }
@@ -154,7 +157,7 @@ tr:last-child td { border-bottom: 0; }
 td.empty { color: var(--muted); }
 
 .result-tools { display: flex; gap: 14px; align-items: center; margin-top: 10px; font-size: 14px; color: var(--muted); }
-.link-button { border: 0; background: none; color: var(--action); font: 500 14px var(--font); cursor: pointer; padding: 0; }
+.link-button { border: 0; background: none; color: var(--action-text); font: 500 14px var(--font); cursor: pointer; padding: 0; }
 
 /* Trace d'exécution : la pièce maîtresse */
 .trace { margin-top: 22px; padding-top: 18px; border-top: 1px dashed var(--line); }
@@ -179,7 +182,7 @@ td.empty { color: var(--muted); }
 
 /* Détails */
 .how { margin-top: 16px; }
-.how summary { cursor: pointer; color: var(--action); font-weight: 500; font-size: 15px; }
+.how summary { cursor: pointer; color: var(--action-text); font-weight: 500; font-size: 15px; }
 .how-body { margin-top: 12px; display: grid; gap: 14px; grid-template-columns: minmax(0, 1fr); }
 .how-body p { overflow-wrap: anywhere; }
 .how h3 { margin: 0 0 6px; font-size: 14px; font-weight: 600; }
