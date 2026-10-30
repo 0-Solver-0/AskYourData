@@ -8,6 +8,8 @@ Pipeline actuel :
   2. génération SQL   — rôle LLM `sql` (prompts/sql_generate.md), sans exécution pour l'instant
 
 Endpoints :
+  GET  /                   — interface web (api_service/static)
+  POST /api/v1/transcribe  — question dictée (WAV) → texte (Muse Voice Transcribe)
   POST /api/v1/ask         — question → découpage → schéma → SQL → vérification → exécution → réponse
   POST /api/v1/translate   — question → découpage → schéma → SQL (sans exécution)
   POST /api/v1/schema/debug — diagnostic de la recherche de schéma
@@ -30,9 +32,9 @@ import logging
 import os
 
 import requests
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, send_from_directory
 
-from api_service import executor, pipeline
+from api_service import executor, pipeline, voice
 from api_service.llm import ROLES, LLMClient, LLMError
 from api_service.prep import structure_question
 
@@ -47,7 +49,8 @@ logger = logging.getLogger("api_service")
 SCHEMA_SERVICE_URL  = os.getenv("SCHEMA_SERVICE_URL",  "http://schema_service:8002")
 SECRET_KEY          = os.getenv("SECRET_KEY",          "dev-secret")
 
-app = Flask(__name__)
+STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
+app = Flask(__name__, static_folder=STATIC_DIR, static_url_path="/static")
 app.json.sort_keys = False   # garder l'ordre des champs (fichiers d'enrichissement lisibles)
 app.config["SECRET_KEY"] = SECRET_KEY
 
@@ -122,6 +125,7 @@ def health():
         "services": statuses,
         "llm":      llm_status(),     # configuration seulement : aucun appel, aucun token
         "execution": executor.ping(),  # rôle PostgreSQL en lecture seule
+        "voice":    {k: v for k, v in voice.voice_config().items() if k in ("model", "languages", "api_key_set")},
         "ready":    all_ok,
     })
 
@@ -384,6 +388,28 @@ def translate():
                              structured=data.get("structured"), reasoning=data.get("reasoning"),
                              extend_fn=call_extend_schema)
     logger.info("Translate — %s en %s ms (%s $)", out["status"], out["timings_ms"].get("total"), out["cost_usd"])
+    return jsonify(out)
+
+
+@app.get("/")
+def home():
+    """Interface web : question écrite ou dictée → réponse."""
+    return send_from_directory(STATIC_DIR, "index.html")
+
+
+@app.post("/api/v1/transcribe")
+def transcribe():
+    """
+    Question dictée → texte (Muse Voice Transcribe). Body : multipart, champ « audio » (WAV mono
+    16 bits, 16 ou 24 kHz) ou WAV brut. Le texte suit ensuite le chemin d'une question écrite.
+    """
+    upload = request.files.get("audio")
+    wav = upload.read() if upload else request.get_data()
+    try:
+        out = voice.transcribe(wav)
+    except voice.VoiceError as exc:
+        return jsonify({"error": str(exc)}), 400
+    logger.info("Transcribe — %s ms d'audio en %s ms", out["audio_ms"], out["elapsed_ms"])
     return jsonify(out)
 
 

@@ -280,6 +280,12 @@ python benchmark/sql_eval.py --file benchmark/unseen_questions.yaml --execute   
 python tools/try_question.py "Top 5 customers by revenue this year" --execute
 ```
 
+## Interface web (question écrite ou dictée)
+
+Ouvrir **http://localhost:5000/** : zone de question, exemples, réponse en tableau (export CSV), résumé, et pour chaque réponse la **trace** (temps par étape, tokens, coût, modèles) et le détail (découpage, SQL exécuté, tables, données demandées par le modèle). Les refus (« donnée absente », « lecture seule ») sont affichés tels quels, sans chiffre.
+
+**Voix** : bouton micro (cliquer pour parler, recliquer pour envoyer). Le navigateur convertit l'enregistrement en WAV mono 16 kHz, `POST /api/v1/transcribe` le transmet à **Muse Voice Transcribe** (`muse-voice-transcribe-1.0`, API Meta, même clé `META_API_KEY`), le texte entendu s'affiche puis part automatiquement dans la même chaîne qu'une question écrite. Réglages : `VOICE_PROVIDER` (profil `meta_voice` de `config/llm_providers.yaml`), `VOICE_LANGUAGES` (par défaut `English,French`). Le micro demande une page ouverte en `localhost` ou en https.
+
 **Taux de bonnes réponses** : [`benchmark/unseen_reference.yaml`](benchmark/unseen_reference.yaml) donne, pour chaque question, un SQL de référence écrit à la main et le choix métier retenu. [`benchmark/answer_eval.py`](benchmark/answer_eval.py) exécute la référence (même rôle en lecture seule), pose la question à `/api/v1/ask` et compare les valeurs : mêmes lignes, colonnes en plus permises, nombres arrondis à 2 décimales, ordre compté pour les classements.
 
 ```powershell

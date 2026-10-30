@@ -47,3 +47,13 @@ local:
   max_tokens: 4000
   timeout_s: 120
   price_per_mtok: {input: 0, cached_input: 0, output: 0}
+
+# Muse Voice Transcribe (API Meta) : question dictée → texte — https://dev.meta.ai/docs/speech-to-text
+# Utilisé par POST /api/v1/transcribe (VOICE_PROVIDER), pas par les rôles prep / sql.
+meta_voice:
+  base_url: https://api.meta.ai/v1
+  model: muse-voice-transcribe-1.0
+  api_key_env: META_API_KEY
+  timeout_s: 60
+  price_per_hour: 0.18
+
