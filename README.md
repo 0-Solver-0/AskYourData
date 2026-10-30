@@ -119,6 +119,7 @@ Règle du hackathon : **tout modèle appelé à l'exécution est un modèle Meta
 | Génération et correction du SQL | `muse-spark-1.3` (Muse Spark 1.3) | Meta | API Meta (`meta_spark`) |
 | Question dictée → texte | `muse-voice-transcribe-1.0` (Muse Voice Transcribe) | Meta | API Meta (`meta_voice`) |
 | Recherche des tables et colonnes (embeddings) | `facebook/contriever-msmarco` (Contriever) | **Meta AI, modèle ouvert** | **en local**, sur CPU, dans le conteneur `schema_service` (`./models/contriever-msmarco`) |
+| ou, en option : recherche des tables et colonnes | `facebook/drama-base` (DRAMA, dérivé de Llama 3.2, CC-BY-NC 4.0) | **Meta AI, modèle ouvert** | **en local**, sur CPU, dans `schema_service` (`./models/drama-base`, `EMBEDDER_BACKEND=drama`) |
 
 Sans modèle d'IA : la vérification du SQL (sqlglot), l'exécution (PostgreSQL en lecture seule), le résumé de la réponse (gabarit dans le code). La lecture à voix haute éventuelle utilise la synthèse vocale du navigateur (Web Speech API), pas un modèle.
 
@@ -142,6 +143,15 @@ curl -X POST http://localhost:5000/api/v1/index -H "Content-Type: application/js
 python tools/calibrate_search.py --url http://localhost:5000      # puis seuils dans .env
 docker compose up -d schema_service
 ```
+
+**DRAMA (option)** : `facebook/drama-base` (Meta AI, 2025, 0,1B paramètres hors vocabulaire, construit à partir de Llama 3.2) classe mieux les correspondances courtes que Contriever (ex. « lead source » → `crm_lead.source_id` et non `lead_mining_request_id`). Il s'utilise par son API native (`encode_queries` / `encode_documents`, préfixe « Query: » ajouté par le modèle) et exécute le code Python livré avec le modèle, d'où l'option explicite :
+
+```bash
+huggingface-cli download facebook/drama-base --local-dir models/drama-base
+# .env : EMBEDDER_MODEL=drama-base  EMBEDDER_BACKEND=drama  EMBEDDER_TRUST_REMOTE_CODE=true
+docker compose up -d --build schema_service    # puis POST /api/v1/index et tools/calibrate_search.py
+```
+Ses scores sont plus bas (≈ 0,5 pour une bonne correspondance) : recalibrer les seuils `STRUCTURED_*`.
 
 **GPU NVIDIA (option)** : inutile pour Contriever (110M paramètres), qui tourne bien sur CPU.
 

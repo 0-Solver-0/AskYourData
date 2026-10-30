@@ -65,3 +65,46 @@ def test_documents_have_no_prompt_and_queries_do():
     assert [p for _, p in model.calls] == [None, "T:", "C:"]
     assert emb.embed_queries([], "columns") == []
     assert emb.info()["dimension"] == 2 and emb.info()["query_prompts"] is True
+
+
+def test_drama_backend_and_remote_code_come_from_the_environment(monkeypatch):
+    monkeypatch.setenv("EMBEDDER_BACKEND", "drama")
+    monkeypatch.setenv("EMBEDDER_TRUST_REMOTE_CODE", "true")
+    cfg = EmbedderConfig.from_env()
+    assert cfg.backend == "drama" and cfg.trust_remote_code is True
+    monkeypatch.setenv("EMBEDDER_BACKEND", "magic")
+    with pytest.raises(ValueError):
+        EmbedderConfig.from_env()
+    monkeypatch.delenv("EMBEDDER_BACKEND")
+    monkeypatch.delenv("EMBEDDER_TRUST_REMOTE_CODE")
+    cfg = EmbedderConfig.from_env()
+    assert cfg.backend == "sentence_transformers" and cfg.trust_remote_code is False
+
+
+class FakeDrama:
+    """API native de DRAMA : encode_queries / encode_documents(tokenizer, textes, use_nested)."""
+
+    def __init__(self):
+        self.calls = []
+
+    def encode_queries(self, tokenizer, texts, use_nested=False):
+        self.calls.append(("q", tokenizer, list(texts), use_nested))
+        return [[1.0, 0.0, 0.5, 0.25] for _ in texts]
+
+    def encode_documents(self, tokenizer, texts, use_nested=False):
+        self.calls.append(("d", tokenizer, list(texts), use_nested))
+        return [[0.0, 1.0, 0.5, 0.25] for _ in texts]
+
+
+def test_drama_backend_uses_queries_and_documents_encoders():
+    cfg = EmbedderConfig(model_path="/m/drama-base", backend="drama", batch_size=2, prompt_tables="ignored")
+    model = FakeDrama()
+    emb = Embedder(cfg, model=model, tokenizer="TOK")
+    assert emb.embed_queries(["lead source", "unit cost", "vendor"], "columns") == [[1.0, 0.0, 0.5, 0.25]] * 3
+    assert emb.embed_documents(["crm_lead.source_id"]) == [[0.0, 1.0, 0.5, 0.25]]
+    assert [c[0] for c in model.calls] == ["q", "q", "d"]               # lots de 2 : 2 appels pour 3 questions
+    assert all(c[1] == "TOK" and c[3] is False for c in model.calls)
+    assert emb.dimension == 4 and emb.embed_queries([]) == []
+    short = Embedder(EmbedderConfig(model_path="/m/drama-base", backend="drama", dim=2), model=FakeDrama(),
+                     tokenizer="T")
+    assert short.embed_query("x") == [1.0, 0.0]                         # Matryoshka : dimension réduite
