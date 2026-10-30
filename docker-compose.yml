@@ -74,6 +74,11 @@ services:
       EMBEDDER_MODEL_PATH: /app/models/${EMBEDDER_MODEL:-contriever-msmarco}
       EMBEDDER_DEVICE:     ${EMBEDDER_DEVICE:-cpu}
       EMBEDDER_DIM:        ${EMBEDDER_DIM:-}
+      # drama : API native de facebook/drama-base (code du modèle exécuté : EMBEDDER_TRUST_REMOTE_CODE=true)
+      EMBEDDER_BACKEND:            ${EMBEDDER_BACKEND:-sentence_transformers}
+      EMBEDDER_TRUST_REMOTE_CODE:  ${EMBEDDER_TRUST_REMOTE_CODE:-false}
+      EMBEDDER_PROMPT_TABLES:      ${EMBEDDER_PROMPT_TABLES:-}
+      EMBEDDER_PROMPT_COLUMNS:     ${EMBEDDER_PROMPT_COLUMNS:-}
       INDEX_FILTERS_PATH:  /app/config/index_filters.yaml
       # Seuils de la recherche structurée (échelle de similarité propre à l'embedder : à recalibrer
       # quand on change de modèle, voir tools/calibrate_search.py)
