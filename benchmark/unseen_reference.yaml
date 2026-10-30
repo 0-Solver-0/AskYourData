@@ -1,0 +1,122 @@
+# Réponses de référence des questions de benchmark/unseen_questions.yaml (base de démo Odoo 18).
+# SQL écrit à la main, résultats validés sur la base par l'utilisateur avant usage.
+# Lancer : python benchmark/answer_eval.py --references-only   (voir les résultats de référence)
+#          python benchmark/answer_eval.py                     (comparer avec /api/v1/ask)
+#
+# order: true  → l'ordre des lignes compte (classements « top N ») ; sinon comparaison sans ordre.
+# La comparaison accepte des colonnes en plus dans la réponse générée (nombre de commandes…),
+# mais chaque colonne de référence doit s'y retrouver, avec les mêmes valeurs ligne à ligne
+# (nombres arrondis à 2 décimales).
+# definition : choix métier retenu quand la question peut se lire de plusieurs façons.
+
+- question: "Average order value per sales team this year"
+  definition: "commandes confirmées (state = 'sale') de l'année en cours, montant TTC (amount_total)"
+  sql: |
+    SELECT t.name->>'en_US' AS sales_team, AVG(so.amount_total) AS average_order_value
+    FROM sale_order so
+    JOIN crm_team t ON t.id = so.team_id
+    WHERE so.state = 'sale'
+      AND so.date_order >= date_trunc('year', CURRENT_DATE)
+      AND so.date_order <  date_trunc('year', CURRENT_DATE) + INTERVAL '1 year'
+    GROUP BY t.name->>'en_US'
+
+- question: "Quotations sent but not yet confirmed"
+  definition: "devis à l'état « envoyé » (state = 'sent')"
+  sql: |
+    SELECT so.name AS order_reference
+    FROM sale_order so
+    WHERE so.state = 'sent'
+
+- question: "Overdue vendor bills by vendor"
+  definition: "factures fournisseurs comptabilisées, échéance dépassée, reste à payer > 0 ; montant restant dû"
+  sql: |
+    SELECT p.name AS vendor, SUM(am.amount_residual) AS overdue_amount
+    FROM account_move am
+    JOIN res_partner p ON p.id = am.partner_id
+    WHERE am.move_type = 'in_invoice'
+      AND am.state = 'posted'
+      AND am.invoice_date_due < CURRENT_DATE
+      AND am.amount_residual > 0
+    GROUP BY p.name
+
+- question: "Payments received last month by journal"
+  definition: "paiements entrants (payment_type = 'inbound') non annulés du mois civil précédent"
+  sql: |
+    SELECT j.name->>'en_US' AS journal, SUM(p.amount) AS total_amount
+    FROM account_payment p
+    JOIN account_journal j ON j.id = p.journal_id
+    WHERE p.payment_type = 'inbound'
+      AND p.state IN ('in_process', 'paid')
+      AND p.date >= date_trunc('month', CURRENT_DATE) - INTERVAL '1 month'
+      AND p.date <  date_trunc('month', CURRENT_DATE)
+    GROUP BY j.name->>'en_US'
+
+- question: "Purchase orders not yet fully received"
+  definition: "commandes fournisseurs confirmées dont la réception est en attente ou partielle"
+  sql: |
+    SELECT po.name AS order_reference
+    FROM purchase_order po
+    WHERE po.state IN ('purchase', 'done')
+      AND po.receipt_status IN ('pending', 'partial')
+
+- question: "Stock value by product category"
+  definition: "quantité en stock des emplacements internes × coût standard (société 1)"
+  sql: |
+    SELECT pc.name AS product_category,
+           SUM(sq.quantity * COALESCE((pp.standard_price->>'1')::numeric, 0)) AS stock_value
+    FROM stock_quant sq
+    JOIN stock_location sl ON sl.id = sq.location_id AND sl.usage = 'internal'
+    JOIN product_product pp ON pp.id = sq.product_id
+    JOIN product_template pt ON pt.id = pp.product_tmpl_id
+    JOIN product_category pc ON pc.id = pt.categ_id
+    GROUP BY pc.name
+
+- question: "Late receipts from vendors"
+  definition: "filtre « En retard » d'Odoo : réceptions non terminées dont la date prévue est passée, par fournisseur"
+  sql: |
+    SELECT p.name AS vendor, COUNT(*) AS late_receipts
+    FROM stock_picking sp
+    JOIN stock_picking_type spt ON spt.id = sp.picking_type_id
+    JOIN res_partner p ON p.id = sp.partner_id
+    WHERE spt.code = 'incoming'
+      AND sp.state IN ('assigned', 'waiting', 'confirmed')
+      AND sp.scheduled_date < NOW()
+    GROUP BY p.name
+
+- question: "Leads created this month by source"
+  definition: "pistes (type = 'lead') actives créées ce mois-ci, par source (sans source : NULL)"
+  sql: |
+    SELECT s.name AS source, COUNT(*) AS lead_count
+    FROM crm_lead l
+    LEFT JOIN utm_source s ON s.id = l.source_id
+    WHERE l.type = 'lead'
+      AND l.active
+      AND l.create_date >= date_trunc('month', CURRENT_DATE)
+      AND l.create_date <  date_trunc('month', CURRENT_DATE) + INTERVAL '1 month'
+    GROUP BY s.name
+
+- question: "Employees by job position and manager"
+  definition: "employés actifs, nombre par poste et par responsable direct (parent_id)"
+  sql: |
+    SELECT j.name->>'en_US' AS job_position, m.name AS manager, COUNT(*) AS employee_count
+    FROM hr_employee e
+    LEFT JOIN hr_job j ON j.id = e.job_id
+    LEFT JOIN hr_employee m ON m.id = e.parent_id
+    WHERE e.active
+    GROUP BY j.name->>'en_US', m.name
+
+- question: "Top 10 products by sales revenue this year"
+  definition: "chiffre d'affaires HT (price_subtotal) des lignes de commandes confirmées de l'année, par produit (modèle)"
+  order: true
+  sql: |
+    SELECT pt.name->>'en_US' AS product, SUM(sol.price_subtotal) AS total_revenue
+    FROM sale_order_line sol
+    JOIN sale_order so ON so.id = sol.order_id
+    JOIN product_product pp ON pp.id = sol.product_id
+    JOIN product_template pt ON pt.id = pp.product_tmpl_id
+    WHERE so.state = 'sale'
+      AND so.date_order >= date_trunc('year', CURRENT_DATE)
+      AND so.date_order <  date_trunc('year', CURRENT_DATE) + INTERVAL '1 year'
+    GROUP BY pt.id, pt.name->>'en_US'
+    ORDER BY total_revenue DESC
+    LIMIT 10
