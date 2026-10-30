@@ -33,9 +33,8 @@ Aucun GPU n'est nécessaire : les LLM sont appelés via API. Un GPU NVIDIA peut 
 ├── docker-compose.odoo.yml  Odoo 18 + postgres_odoo (crée le réseau nl2sql_net)
 ├── .env.example
 ├── docker-compose.gpu.yml   option : GPU NVIDIA pour l'embedder
-├── models/                  embedders locaux (non versionnés)
-│   ├── all-MiniLM-L6-v2/
-│   └── Qwen3-Embedding-0.6B/   (option)
+├── models/                  embedder local (non versionné)
+│   └── contriever-msmarco/  modèle ouvert Meta AI
 ├── schema_service/server.py
 ├── api_service/app.py
 ├── postgres/init/01_init.sql
@@ -51,9 +50,9 @@ Aucun GPU n'est nécessaire : les LLM sont appelés via API. Un GPU NVIDIA peut 
 # 1. Variables d'environnement
 cp .env.example .env
 
-# 2. Embedder local (une fois, ~90 Mo) — autres modèles : voir « Embedder »
+# 2. Embedder local, modèle ouvert de Meta (une fois, ~440 Mo) — voir « Modèles utilisés »
 pip install -U "huggingface_hub[cli]"
-huggingface-cli download sentence-transformers/all-MiniLM-L6-v2 --local-dir models/all-MiniLM-L6-v2
+huggingface-cli download facebook/contriever-msmarco --local-dir models/contriever-msmarco
 
 # 3. Odoo en premier (crée aussi le réseau nl2sql_net)
 docker compose -f docker-compose.odoo.yml up -d
@@ -109,33 +108,41 @@ Contrôle sur la vraie base (sans coût) : `python benchmark/schema_search_eval.
 
 Une collection Postman est fournie : [`tools/postman/AskYourData.postman_collection.json`](tools/postman/AskYourData.postman_collection.json).
 
+## Modèles utilisés
+
+Règle du hackathon : **tout modèle appelé à l'exécution est un modèle Meta**.
+
+| Rôle | Modèle | Éditeur | Où il tourne |
+|---|---|---|---|
+| Découpage de la question (PREP) | `meta-models/muse-spark-open-1026` (Muse Spark Open 30B) | Meta | API Baseten (`config/llm_providers.yaml`, profil `baseten_spark_open`) |
+| Génération et correction du SQL | `muse-spark-1.3` (Muse Spark 1.3) | Meta | API Meta (`meta_spark`) |
+| Question dictée → texte | `muse-voice-transcribe-1.0` (Muse Voice Transcribe) | Meta | API Meta (`meta_voice`) |
+| Recherche des tables et colonnes (embeddings) | `facebook/contriever-msmarco` (Contriever) | **Meta AI, modèle ouvert** | **en local**, sur CPU, dans le conteneur `schema_service` (`./models/contriever-msmarco`) |
+
+Sans modèle d'IA : la vérification du SQL (sqlglot), l'exécution (PostgreSQL en lecture seule), le résumé de la réponse (gabarit dans le code). La lecture à voix haute éventuelle utilise la synthèse vocale du navigateur (Web Speech API), pas un modèle.
+
 ## Embedder
 
-Le modèle qui transforme tables, colonnes et questions en vecteurs se choisit dans le `.env`, sans toucher au code (`schema_service/embedder.py`).
+Le modèle qui transforme tables, colonnes et questions en vecteurs se choisit dans le `.env`, sans toucher au code (`schema_service/embedder.py`). Par défaut : **Contriever** (`facebook/contriever-msmarco`, Meta AI, 768 dimensions, regroupement par moyenne).
 
 | Variable | Rôle |
 |---|---|
-| `EMBEDDER_MODEL` | dossier du modèle dans `./models/` (défaut `all-MiniLM-L6-v2`) |
+| `EMBEDDER_MODEL` | dossier du modèle dans `./models/` (défaut `contriever-msmarco`) |
 | `EMBEDDER_DEVICE` | `cpu`, `cuda` ou `auto` |
-| `EMBEDDER_DIM` | dimension réduite pour les modèles qui l'acceptent (Qwen3-Embedding : 32 à 1024) ; vide = dimension native |
-| `EMBEDDER_PROMPT_TABLES` / `EMBEDDER_PROMPT_COLUMNS` | consignes ajoutées aux questions ; mises automatiquement pour Qwen3-Embedding, aucune pour MiniLM |
+| `EMBEDDER_DIM` | dimension réduite pour les modèles qui l'acceptent ; vide = dimension native |
+| `EMBEDDER_PROMPT_TABLES` / `EMBEDDER_PROMPT_COLUMNS` | consignes ajoutées aux questions (aucune par défaut) |
+| `STRUCTURED_MIN_SIMILARITY`, `STRUCTURED_TABLE_PIECE_MIN`, `STRUCTURED_SUBJECT_MARGIN` | seuils de la recherche, **propres à l'échelle de l'embedder** |
 
-**Changer de modèle** : au démarrage, `schema_service` compare le modèle et la dimension avec ceux de l'index. S'ils diffèrent, il adapte la base et vide les vecteurs, puis `/health` indique `"reindex_required": true`. Il suffit alors de relancer `POST /api/v1/index`. Les annotations, descriptions et valeurs sont conservées.
+**Changer de modèle** : au démarrage, `schema_service` compare le modèle et la dimension avec ceux de l'index. S'ils diffèrent, il adapte la base et vide les vecteurs, puis `/health` indique `"reindex_required": true`. Il suffit alors de relancer `POST /api/v1/index`. Les annotations, descriptions et valeurs sont conservées. Ensuite, **recalibrer les seuils** : `tools/calibrate_search.py` pose les questions de benchmark, montre les scores des bonnes et des mauvaises correspondances et propose des valeurs.
 
 ```bash
-# Exemple : Qwen3-Embedding-0.6B (~1,2 Go)
-huggingface-cli download Qwen/Qwen3-Embedding-0.6B --local-dir models/Qwen3-Embedding-0.6B
-# .env : EMBEDDER_MODEL=Qwen3-Embedding-0.6B
-docker compose up -d --build
+docker compose up -d --build schema_service
 curl -X POST http://localhost:5000/api/v1/index -H "Content-Type: application/json" -d '{"account_id": 1}'
+python tools/calibrate_search.py --url http://localhost:5000      # puis seuils dans .env
+docker compose up -d schema_service
 ```
 
-**GPU NVIDIA (option)** : PyTorch CUDA 12.8, compatible avec les RTX 50xx.
-```bash
-docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build
-curl http://localhost:5000/api/v1/health     # services.schema.embedder.device = "cuda"
-```
-Sans GPU, tout fonctionne sur CPU : le GPU accélère l'indexation et la recherche, il n'est pas nécessaire.
+**GPU NVIDIA (option)** : inutile pour Contriever (110M paramètres), qui tourne bien sur CPU.
 
 ## Indexation : ce qui est retenu
 

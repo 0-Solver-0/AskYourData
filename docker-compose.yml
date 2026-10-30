@@ -70,10 +70,16 @@ services:
       - ./config:/app/config:ro
     environment:
       # Embedder (voir schema_service/embedder.py) : changer de modèle impose de relancer /index
-      EMBEDDER_MODEL_PATH: /app/models/${EMBEDDER_MODEL:-all-MiniLM-L6-v2}
+      # Modèle ouvert de Meta (facebook/contriever-msmarco), exécuté en local sur CPU
+      EMBEDDER_MODEL_PATH: /app/models/${EMBEDDER_MODEL:-contriever-msmarco}
       EMBEDDER_DEVICE:     ${EMBEDDER_DEVICE:-cpu}
       EMBEDDER_DIM:        ${EMBEDDER_DIM:-}
       INDEX_FILTERS_PATH:  /app/config/index_filters.yaml
+      # Seuils de la recherche structurée (échelle de similarité propre à l'embedder : à recalibrer
+      # quand on change de modèle, voir tools/calibrate_search.py)
+      STRUCTURED_MIN_SIMILARITY:  ${STRUCTURED_MIN_SIMILARITY:-0.6}
+      STRUCTURED_TABLE_PIECE_MIN: ${STRUCTURED_TABLE_PIECE_MIN:-0.6}
+      STRUCTURED_SUBJECT_MARGIN:  ${STRUCTURED_SUBJECT_MARGIN:-0.06}
       NL2SQL_DB_HOST:      postgres_nl2sql
       NL2SQL_DB_PORT:      "5432"
       NL2SQL_DB_NAME:      nl2sql
@@ -99,7 +105,7 @@ services:
     deploy:
       resources:
         limits:
-          # MiniLM tient dans 1 Go ; Qwen3-Embedding-0.6B sur CPU demande ~4 Go
+          # Contriever (110M paramètres) tient dans ~2 Go sur CPU
           memory: ${SCHEMA_SERVICE_MEMORY:-4G}
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
