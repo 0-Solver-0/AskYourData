@@ -466,3 +466,33 @@ def test_missing_records_prefer_the_table_over_a_column():
         structured.StructuredParams())
     assert extra_tabs == {"account_move": "supplier invoices and their amounts"} and not extra_cols
     assert report[0]["found"] == "table"
+
+
+def test_group_by_key_to_another_table_does_not_resolve_the_entity():
+    # Cas réel : « product category » → sale_order_line.product_id (0,653) ; product_category (0,615)
+    # n'était pas ajoutée (règle « entité déjà résolue ») → categ_id demandé, relance
+    tables, cols, rels = sales_world()
+    sq = structured.StructuredQuestion.from_dict({"subject": "sales orders", "measures": ["revenue"],
+                                                  "group_by": ["product category"]})
+    texts = [t for _, t in sq.pieces()]
+    sims = {(t, c["column_name"]): [0.1] * len(texts) for t, cs in cols.items() for c in cs}
+    sims[("sale_order_line", "price_subtotal")] = [0.7 if x == "revenue" else 0.1 for x in texts]
+    sims[("sale_order_line", "product_id")] = [0.653 if x == "product category" else 0.1 for x in texts]
+    per_piece = [{"product_category": 0.615} if x == "product category" else {} for x in texts]
+    plan = structured.plan_structured(sq, {"sale_order": 0.6}, sims, tables, cols, rels,
+                                      structured.StructuredParams(), None, per_piece)
+    found = names(plan)
+    assert found["product_category"] == "group_by-table:product category"
+    assert "categ_id" in columns(plan, "product_template")
+    assert "stock_putaway_rule" not in found
+
+
+def test_group_by_key_to_the_found_table_resolves_the_entity():
+    # « salesperson » → sale_order.user_id → res_users : la table trouvée est déjà la cible de la clé
+    tables, cols, rels = sales_world()
+    sq = structured.StructuredQuestion.from_dict({"subject": "sales orders", "group_by": ["salesperson"]})
+    sims = {(t, c["column_name"]): [0.1] for t, cs in cols.items() for c in cs}
+    sims[("sale_order", "user_id")] = [0.8]
+    plan = structured.plan_structured(sq, {"sale_order": 0.6}, sims, tables, cols, rels,
+                                      structured.StructuredParams(), None, [{"res_users": 0.7}])
+    assert names(plan)["res_users"].startswith("lookup:")
