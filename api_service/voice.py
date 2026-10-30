@@ -4,8 +4,9 @@ api_service/voice.py
 Transcription de la question dictée (Muse Voice Transcribe, API Meta). Le texte obtenu suit
 ensuite exactement le chemin d'une question écrite (PREP → recherche → SQL → …).
 
-Configuration (.env) :
-  VOICE_PROVIDER=meta_voice              profil de config/llm_providers.yaml (clé : api_key_env)
+Configuration : le profil (modèle, adresse, prix, nom de la variable de la clé) est défini
+uniquement dans config/llm_providers.yaml ; .env choisit le profil, les langues et contient la clé.
+  VOICE_PROVIDER=meta_voice              profil de config/llm_providers.yaml
   VOICE_LANGUAGES=English,French         langues attendues (oriente sans imposer)
 
 Entrée : WAV mono 16 bits, 16 ou 24 kHz (le navigateur convertit lui-même l'enregistrement).
@@ -23,8 +24,7 @@ import yaml
 
 from api_service.llm import DEFAULT_PROFILES_PATH
 
-DEFAULT_PROFILE = {"base_url": "https://api.meta.ai/v1", "model": "muse-voice-transcribe-1.0",
-                   "api_key_env": "META_API_KEY", "timeout_s": 60, "price_per_hour": 0.18}
+REQUIRED_FIELDS = ("base_url", "model", "api_key_env")
 MAX_BYTES = 32 * 1024 * 1024
 
 
@@ -33,19 +33,34 @@ class VoiceError(Exception):
 
 
 def voice_config(env: Optional[dict] = None, profiles_path: Optional[str] = None) -> dict:
+    """Profil choisi par VOICE_PROVIDER, lu dans llm_providers.yaml. VoiceError s'il manque ou est incomplet."""
     env = env if env is not None else os.environ
-    name = (env.get("VOICE_PROVIDER") or "meta_voice").strip()
+    name = (env.get("VOICE_PROVIDER") or "").strip()
+    if not name:
+        raise VoiceError("VOICE_PROVIDER manquant dans .env (ex. meta_voice)")
     path = profiles_path or env.get("LLM_PROVIDERS_FILE") or DEFAULT_PROFILES_PATH
     try:
         with open(path, encoding="utf-8") as fh:
-            raw = (yaml.safe_load(fh) or {}).get(name) or {}
-    except OSError:
-        raw = {}
-    cfg = dict(DEFAULT_PROFILE)
-    cfg.update({k: v for k, v in raw.items() if v is not None})
-    languages = [x.strip() for x in (env.get("VOICE_LANGUAGES") or "English,French").split(",") if x.strip()]
-    return {"profile": name, **cfg, "languages": languages,
-            "api_key_set": bool(env.get(cfg["api_key_env"]))}
+            raw = (yaml.safe_load(fh) or {}).get(name)
+    except OSError as exc:
+        raise VoiceError(f"fichier de profils illisible : {path}") from exc
+    if not raw:
+        raise VoiceError(f"profil « {name} » absent de config/llm_providers.yaml")
+    missing = [k for k in REQUIRED_FIELDS if not raw.get(k)]
+    if missing:
+        raise VoiceError(f"profil « {name} » : champ(s) manquant(s) {', '.join(missing)}")
+    languages = [x.strip() for x in (env.get("VOICE_LANGUAGES") or "").split(",") if x.strip()]
+    return {"profile": name, "timeout_s": 60, "price_per_hour": 0.0, **raw, "languages": languages,
+            "api_key_set": bool(env.get(raw["api_key_env"]))}
+
+
+def voice_status(env: Optional[dict] = None) -> dict:
+    """Pour /health : configuration sans secret, ou l'erreur de configuration."""
+    try:
+        cfg = voice_config(env)
+    except VoiceError as exc:
+        return {"error": str(exc)}
+    return {k: cfg[k] for k in ("profile", "model", "languages", "api_key_set")}
 
 
 def transcribe(wav: bytes, env: Optional[dict] = None, post=requests.post) -> dict:

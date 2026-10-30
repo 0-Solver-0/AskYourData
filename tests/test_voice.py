@@ -7,7 +7,7 @@ import pytest
 
 from api_service import voice
 
-ENV = {"META_API_KEY": "sk-test-secret", "VOICE_LANGUAGES": "English, French"}
+ENV = {"META_API_KEY": "sk-test-secret", "VOICE_PROVIDER": "meta_voice", "VOICE_LANGUAGES": "English, French"}
 
 
 def wav(seconds=1.0, rate=16000):
@@ -45,7 +45,7 @@ def test_transcribe_sends_the_documented_request():
 
 def test_errors_are_clear_and_never_show_the_key():
     with pytest.raises(voice.VoiceError, match="META_API_KEY"):
-        voice.transcribe(wav(), env={})
+        voice.transcribe(wav(), env={"VOICE_PROVIDER": "meta_voice"})
     with pytest.raises(voice.VoiceError, match="WAV"):
         voice.transcribe(b"OggS....", env=ENV)
 
@@ -54,6 +54,20 @@ def test_errors_are_clear_and_never_show_the_key():
     with pytest.raises(voice.VoiceError) as exc:
         voice.transcribe(wav(), env=ENV, post=refused)
     assert "401" in str(exc.value) and "sk-test-secret" not in str(exc.value)
+
+
+def test_profile_comes_only_from_the_yaml_file(tmp_path):
+    with pytest.raises(voice.VoiceError, match="VOICE_PROVIDER"):
+        voice.voice_config({})
+    with pytest.raises(voice.VoiceError, match="absent"):
+        voice.voice_config({"VOICE_PROVIDER": "nope"})
+    bad = tmp_path / "p.yaml"
+    bad.write_text("v:\n  base_url: https://x\n  api_key_env: K\n")
+    with pytest.raises(voice.VoiceError, match="model"):
+        voice.voice_config({"VOICE_PROVIDER": "v"}, profiles_path=str(bad))
+    cfg = voice.voice_config(ENV)
+    assert cfg["model"] == "muse-voice-transcribe-1.0" and cfg["price_per_hour"] == 0.18
+    assert voice.voice_status({"VOICE_PROVIDER": "nope"}) == {"error": "profil « nope » absent de config/llm_providers.yaml"}
 
 
 def test_routes(monkeypatch):
