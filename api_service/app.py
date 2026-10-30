@@ -14,6 +14,7 @@ Endpoints :
   POST /api/v1/translate   — question → découpage → schéma → SQL (sans exécution)
   POST /api/v1/schema/debug — diagnostic de la recherche de schéma
   POST /api/v1/schema/structured — recherche à partir d'une question découpée (sujet, mesures…)
+  POST /api/v1/schema/probe — un mot → meilleures tables et colonnes, avec le texte gagnant
   GET  /api/v1/health      — healthcheck des services
   GET  /api/v1/schemas     — liste les comptes disponibles
   POST /api/v1/index       — indexe les tables d'un compte (dry_run possible)
@@ -318,6 +319,12 @@ def schema_structured():
     if not data.get("account_id") or not data.get("structured"):
         return jsonify({"error": "'account_id' et 'structured' obligatoires"}), 400
     return _proxy("POST", "/select/structured", json={**data, "debug": True})
+
+
+@app.post("/api/v1/schema/probe")
+def schema_probe():
+    """Sonde de la recherche : {"account_id": 1, "text": "vendor", "limit": 10} (voir tools/probe_search.py)."""
+    return _proxy("POST", "/probe", json=request.get_json(silent=True) or {})
 
 
 @app.post("/api/v1/structure")

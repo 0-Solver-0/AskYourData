@@ -16,6 +16,8 @@ import logging
 logger = logging.getLogger("schema_service.vector_space")
 
 VECTOR_TABLES = ("nl2sql_tables", "nl2sql_columns")
+# Vecteurs multiples (libellé, synonymes) : pas d'index HNSW, la recherche filtre par table ou colonne
+MULTI_VECTOR_TABLE = "nl2sql_vectors"
 LEGACY_MODEL_ID = "all-MiniLM-L6-v2"
 
 
@@ -46,9 +48,17 @@ def set_meta(conn, key: str, value: str) -> None:
 
 
 def missing_embeddings(conn) -> int:
-    """Tables indexées sans vecteur : > 0 signifie qu'il faut relancer /index."""
+    """
+    Tables indexées sans vecteur, ou sans vecteurs multiples (index d'avant la v8) :
+    > 0 signifie qu'il faut relancer /index.
+    """
     with conn.cursor() as cur:
-        cur.execute("SELECT count(*) FROM nl2sql_tables WHERE embedding IS NULL")
+        cur.execute(f"""
+            SELECT count(*) FROM nl2sql_tables t
+            WHERE t.embedding IS NULL
+               OR NOT EXISTS (SELECT 1 FROM {MULTI_VECTOR_TABLE} v
+                              WHERE v.table_id = t.id AND v.column_id IS NULL AND v.embedding IS NOT NULL)
+        """)
         return int(cur.fetchone()[0])
 
 
@@ -66,6 +76,12 @@ def ensure_vector_space(conn, dimension: int, model_id: str) -> dict:
                 cur.execute(f"ALTER TABLE {table} ALTER COLUMN embedding TYPE vector({int(dimension)}) USING NULL")
                 cur.execute(f"CREATE INDEX IF NOT EXISTS idx_{table}_embedding "
                             f"ON {table} USING hnsw (embedding vector_cosine_ops)")
+        # Table des vecteurs multiples (créée en 384 par schema.sql) : alignée à part, sans toucher
+        # aux vecteurs des tables et colonnes s'ils ont déjà la bonne dimension
+        if changed_dim or current_dimension(conn, MULTI_VECTOR_TABLE) != dimension:
+            cur.execute(f"DELETE FROM {MULTI_VECTOR_TABLE}")
+            cur.execute(f"ALTER TABLE {MULTI_VECTOR_TABLE} ALTER COLUMN embedding "
+                        f"TYPE vector({int(dimension)}) USING NULL")
 
     previous = get_meta(conn, "embedder_model")
     if previous is None and not changed_dim:
@@ -80,6 +96,7 @@ def ensure_vector_space(conn, dimension: int, model_id: str) -> dict:
         with conn.cursor() as cur:
             for table in VECTOR_TABLES:
                 cur.execute(f"UPDATE {table} SET embedding = NULL WHERE embedding IS NOT NULL")
+            cur.execute(f"DELETE FROM {MULTI_VECTOR_TABLE}")
     set_meta(conn, "embedder_model", model_id)
     set_meta(conn, "embedder_dimension", str(dimension))
     conn.commit()

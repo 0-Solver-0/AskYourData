@@ -66,3 +66,33 @@ def test_column_text_puts_meaning_before_technical_name():
                               "synonyms": "amount due", "notes": "Negative for credit notes"})
     assert text.startswith("Amount Due Signed | amount due | Negative for credit notes")
     assert text.endswith("column amount_residual_signed")
+
+
+def test_enriched_table_is_encoded_as_label_and_each_synonym():
+    from schema_service.text_builders import table_vector_texts
+    table = {"table_name": "sale_order", "label": "Sales orders and quotations",
+             "description": "Customer quotations and confirmed sales orders, one row per order.",
+             "synonyms": "sales order, quotation,  Quote ,quotation, Sales orders and quotations",
+             "odoo_label": "Sales Order", "domain": "sales"}
+    assert table_vector_texts(table, []) == [("label", "Sales orders and quotations"), ("synonym", "sales order"),
+                                             ("synonym", "quotation"), ("synonym", "Quote")]
+    # Synonymes seuls : pas de libellé Odoo ajouté (« Journal Entry » pour account_move)
+    only = {"table_name": "account_move", "synonyms": "vendor bill", "odoo_label": "Journal Entry"}
+    assert table_vector_texts(only, []) == [("synonym", "vendor bill")]
+
+
+def test_table_without_label_or_synonyms_keeps_the_full_card():
+    from schema_service.text_builders import build_table_text, table_vector_texts
+    table = {"table_name": "stock_quant", "odoo_label": "Quants", "description": "Stock on hand."}
+    assert table_vector_texts(table, []) == [("card", build_table_text(table, []))]
+
+
+def test_enriched_column_leaves_notes_and_help_out_of_the_vectors():
+    from schema_service.text_builders import build_column_text, column_vector_texts
+    col = {"column_name": "partner_id", "label": None, "odoo_label": "Partner",
+           "synonyms": "vendor of the bill, customer of the invoice",
+           "notes": "Customer on invoices, vendor on bills.", "odoo_help": "Partner", "selection_values": None}
+    assert column_vector_texts(col) == [("label", "Partner"), ("synonym", "vendor of the bill"),
+                                        ("synonym", "customer of the invoice")]
+    bare = {"column_name": "state", "odoo_label": "Status", "selection_values": "draft=Draft"}
+    assert column_vector_texts(bare) == [("card", build_column_text(bare))]

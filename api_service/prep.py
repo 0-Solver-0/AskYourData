@@ -5,7 +5,7 @@ Rôle PREP : découpage d'une question en morceaux de recherche (voir prompts/pr
 
     result = structure_question(llm_client, "Top 5 customers by revenue")
     result["status"]      → ok | write_request | out_of_scope | ambiguous | degraded
-    result["structured"]  → {"subject", "measures", "filters", "group_by", "period", "order"}
+    result["structured"]  → {"subject", "measures", "filters", "group_by", "period", "order", "entities"}
                             (format attendu par POST /select/structured de schema_service)
     result["assumption"]  → lecture par défaut choisie et annoncée à l'utilisateur, ou None
 
@@ -75,6 +75,7 @@ def normalize(raw: Any) -> dict:
         structured[key] = items
     structured["period"] = _clean(raw.get("period"))
     structured["order"] = _clean(raw.get("order"))
+    structured["entities"] = _entities(raw.get("entities"), structured, warnings)
 
     if status == "ok" and not structured["subject"]:
         raise ValueError("statut ok sans sujet")
@@ -82,11 +83,35 @@ def normalize(raw: Any) -> dict:
             "warnings": warnings}
 
 
+def _entities(value: Any, structured: dict, warnings: list[str]) -> dict[str, str]:
+    """
+    {"morceau": "entité"} (ou [{"text", "entity"}]) → dictionnaire nettoyé, limité aux morceaux
+    présents dans measures, filters ou group_by (une entité sur un morceau inconnu est signalée).
+    """
+    if isinstance(value, list):
+        value = {v.get("text"): v.get("entity") for v in value if isinstance(v, dict)}
+    if not isinstance(value, dict):
+        return {}
+    pieces = {p.lower(): p for key in LIST_KEYS for p in structured.get(key) or []}
+    out: dict[str, str] = {}
+    for text, entity in value.items():
+        if isinstance(entity, (dict, list)):
+            continue
+        text, entity = _clean(text), _clean(entity)
+        if not text or not entity:
+            continue
+        if text.lower() not in pieces:
+            warnings.append(f"entities : morceau inconnu « {text} »")
+            continue
+        out[pieces[text.lower()]] = entity
+    return out
+
+
 def degraded(question: str, error: str) -> dict:
     """Repli sans découpage : la question entière sert de sujet."""
     return {"status": "degraded", "reason": error, "assumption": None, "warnings": [],
             "structured": {"subject": question, "measures": [], "filters": [], "group_by": [],
-                           "period": None, "order": None}}
+                           "period": None, "order": None, "entities": {}}}
 
 
 def structure_question(client: LLMClient, question: str, *, reasoning: Optional[str] = None) -> dict:

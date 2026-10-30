@@ -103,15 +103,20 @@ def main() -> int:
             if piece.get("matches"):
                 m = piece["matches"][0]
                 (piece_good if m["table"] in wanted else piece_bad).append(m["similarity"])
+                via = f" via « {m['via']} »" if m.get("via") else ""
                 lines.append(f"    {piece['role']:8} « {piece['text']} » → {m['table']}.{m['column']} "
-                             f"{m['similarity']:.3f}{'' if m['table'] in wanted else '  (hors attendu)'}")
+                             f"{m['similarity']:.3f}{via}{'' if m['table'] in wanted else '  (hors attendu)'}")
+            ent = piece.get("entity")
+            if ent:
+                lines.append(f"             entité « {ent['entity']} » → {ent['table']} ({ent.get('rule') or 'sans règle'})")
             tm = piece.get("table_match")
             if tm and tm.get("table"):
                 (table_good if tm["table"] in wanted else table_bad).append(tm["similarity"])
                 lines.append(f"             fiche de table → {tm['table']} {tm['similarity']:.3f}"
                              f"{'' if tm['table'] in wanted else '  (hors attendu)'}")
         mark = "✓" if chosen_ok else ("~" if rank else "✗")
-        top = ", ".join(f"{r['table_name']} {r['similarity']:.3f}" for r in ranking[:3])
+        top = ", ".join(f"{r['table_name']} {r['similarity']:.3f}" + (f" « {r['via']} »" if r.get("via") else "")
+                        for r in ranking[:3])
         by = debug.get("subject_by") or "vectors"
         print(f"{mark} {case['question']}\n    sujet attendu {sorted(subject)} : retenu {chosen} ({by}) ; "
               f"rang par score {rank or '>10'} ; tête : {top}")

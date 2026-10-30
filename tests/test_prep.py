@@ -27,12 +27,24 @@ def test_answer_is_normalized():
     assert out["status"] == "ok"
     assert out["structured"] == {"subject": "customer invoices", "measures": ["amount due"],
                                  "filters": ["payment status"], "group_by": ["customer"],
-                                 "period": None, "order": None}
+                                 "period": None, "order": None, "entities": {}}
     # Tableau d'un seul objet (ancien format) accepté ; statut inconnu signalé
     out = prep.normalize([{"status": "weird", "subject": "employees"}])
     assert out["status"] == "ok" and out["warnings"]
     with pytest.raises(ValueError):
         prep.normalize({"status": "ok", "subject": None})
+
+
+def test_entities_are_kept_for_known_pieces_only():
+    raw = {"status": "ok", "subject": "vendor bill", "filters": ["due date"], "group_by": ["Vendor", "city"],
+           "entities": {"vendor": " vendor ", "city": "vendor", "ghost": "x", "due date": {"bad": 1}}}
+    out = prep.normalize(raw)
+    assert out["structured"]["entities"] == {"Vendor": "vendor", "city": "vendor"}
+    assert any("ghost" in w for w in out["warnings"])
+    listed = prep.normalize({"status": "ok", "subject": "sales order", "group_by": ["category"],
+                             "entities": [{"text": "category", "entity": "product"}]})
+    assert listed["structured"]["entities"] == {"category": "product"}
+    assert prep.normalize({"status": "ok", "subject": "x", "entities": "nope"})["structured"]["entities"] == {}
 
 
 def test_structure_question_end_to_end_with_a_fake_model():

@@ -197,7 +197,14 @@ curl -X POST http://localhost:5000/api/v1/schema/structured -H "Content-Type: ap
 - **Réponse** : le schéma, plus le diagnostic (classement du sujet et colonnes trouvées pour chaque morceau).
 - **Les questions découpées à la main** : 12 dans [`benchmark/structured_questions.yaml`](benchmark/structured_questions.yaml) et 10 jamais réglées dans [`benchmark/unseen_questions.yaml`](benchmark/unseen_questions.yaml), à lancer avec `python benchmark/schema_search_eval.py --file <fichier> --verbose`.
 
-Les fiches ont été réécrites dans la même forme. Une table enrichie est décrite par son libellé, sa description et ses synonymes, sans liste de colonnes. Une colonne est décrite par son sens d'abord (libellé, synonymes, notes, aide, valeurs), et son nom technique en dernier. **Il faut réindexer une fois** après la mise à jour.
+- **Entités** : PREP indique à quoi appartient un morceau quand ce n'est pas le sujet (`"entities": {"vendor": "vendor", "city": "customer"}`). L'entité est cherchée parmi les fiches de tables (seuil `STRUCTURED_TABLE_PIECE_MIN`) : parmi les 3 meilleures, celle que le sujet référence par une clé étrangère, sinon la première (« vendor » → `res_partner` plutôt que `product_supplierinfo`). Un morceau qui nomme l'entité (« vendor ») prend la **clé étrangère du sujet vers sa table** (`account_move.partner_id → res_partner`), même si une colonne d'une autre table ressemble davantage au mot ; sans clé directe, la table de l'entité est ajoutée avec son chemin. Un attribut (« city » du client) est cherché **d'abord dans la table de l'entité**, puis partout en secours.
+
+**Plusieurs vecteurs par table et par colonne.** Une fiche qui mêle plusieurs sens (« Customer or vendor », sept types de documents…) donne un vecteur moyen, battu par une carte plus étroite d'une autre table. Une table ou une colonne enrichie est donc encodée en plusieurs textes courts : **son libellé, puis un texte par synonyme** (table `nl2sql_vectors`). Son score est le meilleur d'entre eux, et le diagnostic indique le texte gagnant (`via`). La description, les notes, l'aide Odoo et les valeurs ne sont **pas** encodées : elles vont au modèle SQL, dans le DDL. Sans libellé ni synonymes, la fiche complète d'avant sert de secours. Conséquences : chaque synonyme doit être précis et propre à sa table ; les scores montent (texte court contre requête courte), donc **recalibrer les seuils** ; **réindexer une fois** après la mise à jour (`/health` indique `reindex_required` tant que les vecteurs multiples manquent ; d'ici là, la recherche utilise l'ancien vecteur unique).
+
+Tester un mot à la main, sans lancer toute la chaîne :
+```bash
+python tools/probe_search.py "vendor" "payment journal" --limit 5   # tables et colonnes, score et texte gagnant
+```
 
 ## Enrichissement par module (export / import)
 
@@ -219,6 +226,13 @@ curl -X POST "http://localhost:5000/api/v1/schema/import?account_id=1" \
 - Mesurer l'effet : `schema_search_eval.py` affiche le **rang des tables attendues par vecteur seul** (question brute contre fiches de tables, sans mots ni règles). Des questions nouvelles sur un module se mettent dans un fichier à part (`--file benchmark/account_questions.yaml`).
 
 Détails et règles : [`enrichment/README.md`](enrichment/README.md).
+
+**Enrichissement par Muse Spark Open 30B** : [`tools/enrich_with_spark.py`](tools/enrich_with_spark.py) envoie chaque table d'un module au rôle PREP (30B) avec les règles de [`prompts/enrich_schema.md`](prompts/enrich_schema.md) : synonymes au singulier, propres à la table, sans mots de colonnes ; dates prévue / réelle ; notes pour les valeurs vides et les pièges. Il écrit un fichier par module dans `enrichment/spark/` (ignoré par Git), **à relire avant import**, puis liste les synonymes partagés entre tables. Rien n'est écrit dans la base. Coût estimé : environ 2 $ pour les 118 tables métier.
+```bash
+docker run --rm --network nl2sql_net --env-file .env -v ${PWD}:/w -w /w askyourdata-api_service \
+  python tools/enrich_with_spark.py --module sale --module purchase --url http://askyourdata_api:5000
+python tools/enrich_with_spark.py --check enrichment/spark/*.json      # doublons seulement
+```
 
 ## Modèles LLM par rôle
 

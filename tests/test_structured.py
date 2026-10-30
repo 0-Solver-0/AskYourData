@@ -77,7 +77,7 @@ def test_pieces_report_their_best_columns():
     plan = run(UNPAID, {"account_move": 0.6}, UNPAID_SIMS)
     by_text = {p["text"]: p for p in plan["pieces"]}
     assert by_text["unpaid amount"]["matches"][0] == {"table": "account_move", "column": "amount_residual",
-                                                      "similarity": 0.72}
+                                                      "similarity": 0.72, "via": None}
     # Sujet d'abord : sale_order.partner_id (0,60) ne bat pas assez account_move.partner_id (0,58)
     assert [m["table"] for m in by_text["customer"]["matches"]] == ["account_move"]
     assert by_text["customer"]["subject_first"] is True
@@ -526,3 +526,73 @@ def test_plan_reports_how_the_subject_was_chosen():
     forced = structured.plan_structured(sq, {"sale_order": 0.7}, sims, tables, cols, rels,
                                         structured.StructuredParams(), subject="res_users")
     assert forced["subject_table"] == "res_users" and forced["subject_by"] == "forced"
+
+
+def test_entities_are_parsed_and_ignored_when_they_name_the_subject():
+    sq = structured.StructuredQuestion.from_dict({
+        "subject": "vendor bills", "group_by": ["Vendor"], "filters": ["country"],
+        "entities": {"vendor": "vendor", "Country": " customer ", "due date": "vendor bill", "x": ""}})
+    assert sq.entity_of("Vendor") == "vendor" and sq.entity_of("country") == "customer"
+    assert sq.entity_of("due date") is None                    # même chose que le sujet (singulier/pluriel)
+    assert sq.entity_of("x") is None
+    listed = structured.StructuredQuestion.from_dict({"subject": "sales orders",
+                                                      "entities": [{"text": "category", "entity": "product"}, "bad"]})
+    assert listed.entities == {"category": "product"}
+
+
+def _entity_plan(group_by, entity, table, sims_for):
+    tables, cols, rels = sales_world()
+    sq = structured.StructuredQuestion.from_dict({"subject": "sales orders", "measures": ["revenue"],
+                                                  "group_by": [group_by], "entities": {group_by: entity}})
+    texts = [t for _, t in sq.pieces()]
+    sims = {(t, c["column_name"]): [0.1] * len(texts) for t, cs in cols.items() for c in cs}
+    sims[("sale_order_line", "price_subtotal")] = [0.75 if x == "revenue" else 0.1 for x in texts]
+    for key, value in sims_for.items():
+        sims[key] = [value if x == group_by else 0.1 for x in texts]
+    table_sims = {"sale_order": 0.7, "sale_order_line": 0.6, "stock_putaway_rule": 0.3}
+    ents = [{"entity": entity, "table": table, "similarity": 0.8} if x == group_by else None for x in texts]
+    return structured.plan_structured(sq, table_sims, sims, tables, cols, rels, structured.StructuredParams(),
+                                      None, None, piece_entities=ents)
+
+
+def test_entity_attribute_is_searched_in_the_entity_table_first():
+    # « category » d'un produit : product_template.categ_id, pas la catégorie d'une règle de rangement
+    plan = _entity_plan("category", "product", "product_template",
+                        {("product_template", "categ_id"): 0.66, ("stock_putaway_rule", "category_id"): 0.8})
+    piece = next(p for p in plan["pieces"] if p["text"] == "category")
+    assert piece["entity"]["rule"] == "attribute"
+    assert [(m["table"], m["column"]) for m in piece["matches"]] == [("product_template", "categ_id")]
+    found = names(plan)
+    assert {"product_product", "product_template", "product_category"} <= set(found)
+    assert "stock_putaway_rule" not in found
+
+
+def test_entity_named_by_the_piece_takes_the_subject_key():
+    # « salesperson » = l'entité elle-même : la clé sale_order.user_id vers sa table
+    plan = _entity_plan("salesperson", "salesperson", "res_users", {("stock_putaway_rule", "product_id"): 0.9})
+    piece = next(p for p in plan["pieces"] if p["text"] == "salesperson")
+    assert piece["entity"]["rule"] == "fk" and not piece["not_found"]
+    assert [(m["table"], m["column"]) for m in piece["matches"]] == [("sale_order", "user_id")]
+    assert "res_users" in names(plan) and "stock_putaway_rule" not in names(plan)
+
+
+def test_entity_without_a_key_from_the_subject_brings_its_table_and_path():
+    plan = _entity_plan("category", "category", "product_category", {("stock_putaway_rule", "category_id"): 0.9})
+    piece = next(p for p in plan["pieces"] if p["text"] == "category")
+    assert piece["entity"]["rule"] == "table" and piece["matches"] == []
+    found = names(plan)
+    assert found["product_category"] == "entity:category"
+    assert {"product_product", "product_template"} <= set(found) and "stock_putaway_rule" not in found
+
+
+def test_entity_table_is_the_candidate_the_subject_references():
+    # « salesperson » : la première fiche trouvée est une autre table ; le sujet référence res_users
+    tables, cols, rels = sales_world()
+    fk = {(r["from_table"], r["from_column"]): r["to_table"] for r in rels}
+    ent = {"entity": "salesperson", "candidates": [{"table": "stock_putaway_rule", "similarity": 0.8, "via": "x"},
+                                                   {"table": "res_users", "similarity": 0.7, "via": "salesperson"}]}
+    chosen = structured._choose_entity_table(ent, {"sale_order"}, fk, tables)
+    assert chosen["table"] == "res_users" and chosen["via"] == "salesperson"
+    # Aucune candidate référencée : la première
+    assert structured._choose_entity_table(ent, {"product_category"}, fk, tables)["table"] == "stock_putaway_rule"
+    assert structured._choose_entity_table(None, {"sale_order"}, fk, tables) is None
