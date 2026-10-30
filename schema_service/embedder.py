@@ -3,13 +3,16 @@ schema_service/embedder.py
 --------------------------
 Embedder local paramétrable (sentence-transformers) : modèle, dimension, appareil, consignes.
 
+Modèle par défaut : facebook/contriever-msmarco, modèle ouvert de Meta AI (règle du hackathon :
+tout modèle appelé à l'exécution est un modèle Meta). Exécuté en local, sur CPU, dans schema_service ;
+regroupement par moyenne des tokens (créé automatiquement par sentence-transformers), 768 dimensions.
+
 Variables d'environnement :
-  EMBEDDER_MODEL_PATH     dossier du modèle (défaut : MINILM_MODEL_PATH, puis all-MiniLM-L6-v2)
+  EMBEDDER_MODEL_PATH     dossier du modèle (défaut : /app/models/contriever-msmarco)
   EMBEDDER_DEVICE         auto | cpu | cuda          (auto : GPU s'il est disponible)
-  EMBEDDER_DIM            dimension réduite (modèles « Matryoshka » comme Qwen3-Embedding) ; vide = native
-  EMBEDDER_PROMPT_TABLES  consigne ajoutée à la question pour chercher les tables
+  EMBEDDER_DIM            dimension réduite pour les modèles qui l'acceptent ; vide = native
+  EMBEDDER_PROMPT_TABLES  consigne ajoutée à la question pour chercher les tables (défaut : aucune)
   EMBEDDER_PROMPT_COLUMNS consigne ajoutée aux éléments de la question pour chercher les colonnes
-                          (non définies : consignes par défaut du modèle, aucune pour MiniLM)
   EMBEDDER_FP16           true | false : demi-précision sur GPU (défaut true)
   EMBEDDER_BATCH_SIZE     taille des lots à l'indexation (défaut 32)
 
@@ -25,22 +28,7 @@ from typing import Any, Optional
 
 logger = logging.getLogger("schema_service.embedder")
 
-DEFAULT_MODEL_PATH = "/app/models/all-MiniLM-L6-v2"
-
-# Format attendu par Qwen3-Embedding : « Instruct: <tâche>\nQuery:<requête> »
-QWEN3_PROMPTS = {
-    "tables": ("Instruct: Given a business question about company data, "
-               "retrieve the database tables needed to answer it\nQuery:"),
-    "columns": ("Instruct: Given part of a business question, "
-                "retrieve the database column that holds this information\nQuery:"),
-}
-
-
-def default_prompts(model_path: str) -> dict[str, str]:
-    """Consignes par défaut selon le modèle : Qwen3-Embedding en attend une, MiniLM et bge-small non."""
-    if "qwen3-embedding" in os.path.basename(model_path.rstrip("/\\")).lower():
-        return dict(QWEN3_PROMPTS)
-    return {"tables": "", "columns": ""}
+DEFAULT_MODEL_PATH = "/app/models/contriever-msmarco"
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -62,8 +50,7 @@ class EmbedderConfig:
 
     @classmethod
     def from_env(cls) -> "EmbedderConfig":
-        path = os.getenv("EMBEDDER_MODEL_PATH") or os.getenv("MINILM_MODEL_PATH") or DEFAULT_MODEL_PATH
-        prompts = default_prompts(path)
+        path = os.getenv("EMBEDDER_MODEL_PATH") or DEFAULT_MODEL_PATH
         dim = os.getenv("EMBEDDER_DIM", "").strip()
         device = (os.getenv("EMBEDDER_DEVICE") or "auto").strip().lower()
         if device not in ("auto", "cpu", "cuda"):
@@ -72,9 +59,8 @@ class EmbedderConfig:
             model_path=path,
             device=device,
             dim=int(dim) if dim else None,
-            # Variable définie (même vide) : elle remplace la consigne par défaut
-            prompt_tables=os.environ.get("EMBEDDER_PROMPT_TABLES", prompts["tables"]),
-            prompt_columns=os.environ.get("EMBEDDER_PROMPT_COLUMNS", prompts["columns"]),
+            prompt_tables=os.environ.get("EMBEDDER_PROMPT_TABLES", ""),
+            prompt_columns=os.environ.get("EMBEDDER_PROMPT_COLUMNS", ""),
             fp16=_env_bool("EMBEDDER_FP16", True),
             batch_size=int(os.getenv("EMBEDDER_BATCH_SIZE", "32")),
         )

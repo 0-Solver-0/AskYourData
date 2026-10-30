@@ -4,7 +4,7 @@ schema_service/text_builders.py
 Construction des textes encodés en vecteurs (tables et colonnes).
 
 Fonctions pures, testables sans modèle ni base.
-L'embedder tronque les textes longs (~256 tokens pour all-MiniLM-L6-v2) : les
+L'embedder tronque les textes longs (512 tokens pour Contriever) : les
 informations les plus utiles (libellés, description) sont donc placées en tête.
 """
 
