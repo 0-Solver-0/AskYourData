@@ -67,7 +67,7 @@ def main() -> int:
     for path in args.file or DEFAULT_FILES:
         cases += [c for c in yaml.safe_load(open(path, encoding="utf-8")) if c.get("structured")]
 
-    subject_ok, gaps, subject_scores, other_top = 0, [], [], []
+    subject_ok, chosen_total, gaps, subject_scores, other_top = 0, 0, [], [], []
     piece_good, piece_bad, table_good, table_bad = [], [], [], []
     embedder = None
     for case in cases:
@@ -85,8 +85,13 @@ def main() -> int:
         names = [r["table_name"] for r in ranking]
         subject = groups[0] if groups else set()
         rank = next((i + 1 for i, n in enumerate(names) if n in subject), None)
+        # Sujet réellement retenu (règle « en-tête avant ses lignes » comprise), sans le juge
+        chosen = debug.get("subject_table") or (names[0] if names else None)
+        chosen_ok = chosen in subject
         if rank == 1:
             subject_ok += 1
+        if chosen_ok:
+            chosen_total += 1
         if len(ranking) >= 2:
             gaps.append(ranking[0]["similarity"] - ranking[1]["similarity"])
         if rank:
@@ -105,15 +110,18 @@ def main() -> int:
                 (table_good if tm["table"] in wanted else table_bad).append(tm["similarity"])
                 lines.append(f"             fiche de table → {tm['table']} {tm['similarity']:.3f}"
                              f"{'' if tm['table'] in wanted else '  (hors attendu)'}")
-        mark = "✓" if rank == 1 else ("~" if rank else "✗")
+        mark = "✓" if chosen_ok else ("~" if rank else "✗")
         top = ", ".join(f"{r['table_name']} {r['similarity']:.3f}" for r in ranking[:3])
-        print(f"{mark} {case['question']}\n    sujet attendu {sorted(subject)} : rang {rank or '>10'} ; tête : {top}")
+        by = debug.get("subject_by") or "vectors"
+        print(f"{mark} {case['question']}\n    sujet attendu {sorted(subject)} : retenu {chosen} ({by}) ; "
+              f"rang par score {rank or '>10'} ; tête : {top}")
         if args.verbose:
             print("\n".join(lines))
 
     n = len(cases)
     print(f"\n── Calibrage ({embedder}, {n} questions) ──")
-    print(f"Sujet au 1er rang       : {subject_ok}/{n}")
+    print(f"Sujet retenu juste      : {chosen_total}/{n}  (sans le juge ; règle « en-tête avant lignes » comprise)")
+    print(f"Sujet 1er par score     : {subject_ok}/{n}")
     print(f"Score du bon sujet      : {quartiles(subject_scores)}")
     print(f"Autres tables du top 5  : {quartiles(other_top)}")
     print(f"Écart 1er – 2e          : {quartiles(gaps)}")
