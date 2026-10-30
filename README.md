@@ -280,6 +280,13 @@ python benchmark/sql_eval.py --file benchmark/unseen_questions.yaml --execute   
 python tools/try_question.py "Top 5 customers by revenue this year" --execute
 ```
 
+**Taux de bonnes réponses** : [`benchmark/unseen_reference.yaml`](benchmark/unseen_reference.yaml) donne, pour chaque question, un SQL de référence écrit à la main et le choix métier retenu. [`benchmark/answer_eval.py`](benchmark/answer_eval.py) exécute la référence (même rôle en lecture seule), pose la question à `/api/v1/ask` et compare les valeurs : mêmes lignes, colonnes en plus permises, nombres arrondis à 2 décimales, ordre compté pour les classements.
+
+```powershell
+docker run --rm --network nl2sql_net -v ${PWD}:/w -w /w python:3.11-slim sh -c "pip install -q requests pyyaml psycopg2-binary sqlglot==26.17.1 && python benchmark/answer_eval.py --url http://askyourdata_api:5000 --references-only"
+docker run --rm --network nl2sql_net -v ${PWD}:/w -w /w python:3.11-slim sh -c "pip install -q requests pyyaml psycopg2-binary sqlglot==26.17.1 && python benchmark/answer_eval.py --url http://askyourdata_api:5000 --runs 3"
+```
+
 ## Annotations
 
 ```bash
