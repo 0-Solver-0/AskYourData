@@ -108,10 +108,11 @@ def column_similarities(conn, account_id: int, table_names: list[str],
 
 
 def run_structured(conn, embedder, account_id: int, question: str, sq, params,
-                   missing: Optional[list[str]] = None) -> tuple[dict, list]:
+                   missing: Optional[list[str]] = None, subject: Optional[str] = None) -> tuple[dict, list]:
     """
     Recherche structurée ; avec `missing`, recherche complémentaire des mots manquants (colonnes des
     tables retenues et de leurs voisines, puis fiches de tables) et plan complété.
+    `subject` : table du sujet imposée (choix du juge parmi les candidates).
     Renvoie (plan, rapport des mots manquants).
     """
     pieces = sq.pieces()
@@ -129,7 +130,11 @@ def run_structured(conn, embedder, account_id: int, question: str, sq, params,
     if not candidates:
         raise LookupError("Aucune table indexée — lancez /index d'abord")
     table_sims = {c.table_name: c.vector_score for c in candidates}
-    names = sorted(table_sims, key=table_sims.get, reverse=True)[:params.candidate_tables]
+    ranking = structured.order_subjects(table_sims, tables_by_name, relations, subject)
+    names = ranking[:params.candidate_tables]
+    lines = structured.line_table(ranking[0], relations, tables_by_name) if ranking else None
+    if lines and lines not in names:
+        names.append(lines)
     column_sims = column_similarities(conn, account_id, names, piece_vecs)
     piece_table_sims: list[dict[str, float]] = [{} for _ in pieces]
     for i, vec in zip(group_idx, group_vecs):
@@ -139,7 +144,7 @@ def run_structured(conn, embedder, account_id: int, question: str, sq, params,
     value_text = question or " ".join([sq.subject, *sq.filters])
     value_matches = search.match_values(value_text, values)
     plan = structured.plan_structured(sq, table_sims, column_sims, tables_by_name, columns_by_table,
-                                      relations, params, value_matches, piece_table_sims)
+                                      relations, params, value_matches, piece_table_sims, subject=subject)
     report: list = []
     if missing:
         selected = [t["table_name"] for t in plan["tables"]]
@@ -155,5 +160,6 @@ def run_structured(conn, embedder, account_id: int, question: str, sq, params,
         if extra_cols or extra_tabs:
             plan = structured.plan_structured(sq, table_sims, column_sims, tables_by_name, columns_by_table,
                                               relations, params, value_matches, piece_table_sims,
-                                              extra_columns=extra_cols, extra_tables=extra_tabs)
+                                              extra_columns=extra_cols, extra_tables=extra_tabs,
+                                              subject=subject)
     return plan, report

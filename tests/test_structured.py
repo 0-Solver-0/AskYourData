@@ -496,3 +496,33 @@ def test_group_by_key_to_the_found_table_resolves_the_entity():
     plan = structured.plan_structured(sq, {"sale_order": 0.6}, sims, tables, cols, rels,
                                       structured.StructuredParams(), None, [{"res_users": 0.7}])
     assert names(plan)["res_users"].startswith("lookup:")
+
+
+def test_header_comes_before_its_lines_as_subject():
+    # Calibrage Contriever : sale_order_line 0,649 devant sale_order 0,615 (4 questions sur 22)
+    tables, _, rels = sales_world()
+    sims = {"sale_order_line": 0.649, "sale_order": 0.615, "product_template": 0.5}
+    assert structured.order_subjects(sims, tables, rels)[:2] == ["sale_order", "sale_order_line"]
+    assert structured.order_subjects({"product_template": 0.7, "sale_order": 0.6}, tables, rels)[0] == \
+        "product_template"
+
+
+def test_forced_subject_goes_first_and_a_forced_line_table_means_its_header():
+    tables, _, rels = sales_world()
+    sims = {"sale_order": 0.7, "product_template": 0.6, "sale_order_line": 0.5}
+    assert structured.order_subjects(sims, tables, rels, subject="product_template")[0] == "product_template"
+    assert structured.order_subjects(sims, tables, rels, subject="sale_order_line")[0] == "sale_order"
+    assert structured.order_subjects(sims, tables, rels, subject="unknown_table")[0] == "sale_order"
+
+
+def test_plan_reports_how_the_subject_was_chosen():
+    tables, cols, rels = sales_world()
+    sq = structured.StructuredQuestion.from_dict({"subject": "sales orders", "measures": ["revenue"]})
+    sims = {(t, c["column_name"]): [0.1] for t, cs in cols.items() for c in cs}
+    plan = structured.plan_structured(sq, {"sale_order_line": 0.65, "sale_order": 0.61}, sims, tables, cols, rels,
+                                      structured.StructuredParams())
+    assert plan["subject_table"] == "sale_order" and plan["subject_by"] == "header"
+    assert plan["subject_ranking"][0]["table_name"] == "sale_order_line"          # classement brut affiché
+    forced = structured.plan_structured(sq, {"sale_order": 0.7}, sims, tables, cols, rels,
+                                        structured.StructuredParams(), subject="res_users")
+    assert forced["subject_table"] == "res_users" and forced["subject_by"] == "forced"

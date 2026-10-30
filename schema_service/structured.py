@@ -234,6 +234,25 @@ def line_table(subject: str, relations: list[dict], tables_by_name: dict[str, di
     return child if linked else None
 
 
+def order_subjects(table_sims: dict[str, float], tables_by_name: dict[str, dict], relations: list[dict],
+                   subject: Optional[str] = None) -> list[str]:
+    """
+    Classement des tables pour le sujet : par similarité, puis
+      - `subject` imposé (choix du juge, liste fermée) : en tête ;
+      - si la table de tête est la table des lignes d'un document (sale_order_line), son en-tête
+        (sale_order) passe en tête : les lignes suivent l'en-tête (line_table), l'inverse non.
+    """
+    ranking = sorted((t for t in table_sims if t in tables_by_name), key=lambda t: table_sims[t], reverse=True)
+    first = subject if subject and subject in tables_by_name else (ranking[0] if ranking else None)
+    if first and first.endswith("_line"):
+        header = first[:-len("_line")]
+        if line_table(header, relations, tables_by_name) == first:
+            first = header
+    if not first:
+        return ranking
+    return [first] + [t for t in ranking if t != first]
+
+
 def _connected(graph: dict, tables: set[str], a: str, b: str) -> bool:
     """a et b sont-ils déjà reliés en ne passant que par `tables` ?"""
     queue, seen = deque([a]), {a}
@@ -373,7 +392,7 @@ def plan_structured(sq: StructuredQuestion, table_sims: dict[str, float],
                     params: StructuredParams, value_matches: Optional[list[ValueMatch]] = None,
                     piece_table_sims: Optional[list[dict[str, float]]] = None,
                     extra_columns: Optional[dict[tuple[str, str], str]] = None,
-                    extra_tables: Optional[dict[str, str]] = None) -> dict:
+                    extra_tables: Optional[dict[str, str]] = None, subject: Optional[str] = None) -> dict:
     """
     `extra_columns` / `extra_tables` : ajouts de la recherche complémentaire (find_missing),
     {(table, colonne): mot manquant} et {table: mot manquant} ; rien n'est retiré du plan de base.
@@ -383,7 +402,8 @@ def plan_structured(sq: StructuredQuestion, table_sims: dict[str, float],
     (calculé pour les regroupements seulement ; vide ailleurs).
     """
     pieces = sq.pieces()
-    ranking = sorted((t for t in table_sims if t in tables_by_name), key=lambda t: table_sims[t], reverse=True)
+    ranking = order_subjects(table_sims, tables_by_name, relations, subject)
+    by_score = sorted((t for t in table_sims if t in tables_by_name), key=lambda t: table_sims[t], reverse=True)
     candidates = ranking[:params.candidate_tables]
     if not candidates:
         return {"tables": [], "schema_ddl": "", "token_estimate": 0, "relations": [], "pieces": [],
@@ -595,7 +615,13 @@ def plan_structured(sq: StructuredQuestion, table_sims: dict[str, float],
         "token_estimate": estimate_tokens(ddl),
         "relations": used,
         "pieces": piece_matches,
-        "subject_ranking": [{"table_name": t, "similarity": round(table_sims[t], 3)} for t in ranking[:10]],
+        "subject_ranking": [{"table_name": t, "similarity": round(table_sims[t], 3),
+                             "label": tables_by_name[t].get("label") or tables_by_name[t].get("odoo_label"),
+                             "description": (tables_by_name[t].get("description") or "")[:240]}
+                            for t in by_score[:10]],
+        "subject_table": ranking[0],
+        "subject_by": ("forced" if subject and subject == ranking[0]
+                       else "header" if ranking[0] != by_score[0] else "vectors"),
         "value_matches": [{"table_name": m.table_name, "column_name": m.column_name, "value": m.value}
                           for m in value_matches],
         "value_matches_ignored": [{"table_name": m.table_name, "column_name": m.column_name, "value": m.value}

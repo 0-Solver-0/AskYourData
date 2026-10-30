@@ -13,19 +13,29 @@ ask : translate, puis vérification (api_service/validate.py) → exécution en 
 
 from __future__ import annotations
 
+import os
 import time
 from typing import Callable, Optional
 
 from api_service.answer import build_answer
+from api_service.judge import pick_subject, should_judge
 from api_service.llm import LLMClient
 from api_service.prep import structure_question
 from api_service.sqlgen import generate_sql
 from api_service.validate import validate_sql
 
-# schema_fn(account_id, question, structured) → réponse de POST /select/structured
-SchemaFn = Callable[[int, str, dict], dict]
-# extend_fn(account_id, question, structured, missing) → réponse de POST /select/extend
-ExtendFn = Callable[[int, str, dict, list], dict]
+# schema_fn(account_id, question, structured[, subject=table]) → réponse de POST /select/structured
+SchemaFn = Callable[..., dict]
+# extend_fn(account_id, question, structured, missing[, subject=table]) → réponse de POST /select/extend
+ExtendFn = Callable[..., dict]
+
+
+def judge_gap() -> float:
+    """STRUCTURED_JUDGE_GAP : écart 1re–2e table sous lequel le juge est appelé (0 = jamais, 1 = toujours)."""
+    try:
+        return float(os.getenv("STRUCTURED_JUDGE_GAP", "0.05"))
+    except ValueError:
+        return 0.05
 
 # execute_fn(sql) → résultat de api_service.executor.execute
 ExecuteFn = Callable[[str], dict]
@@ -56,7 +66,7 @@ def _add_usage(total: Optional[dict], part: dict) -> dict:
 
 def translate(client: LLMClient, schema_fn: SchemaFn, question: str, account_id: int, *,
               structured: Optional[dict] = None, reasoning: Optional[dict] = None,
-              extend_fn: Optional[ExtendFn] = None) -> dict:
+              extend_fn: Optional[ExtendFn] = None, gap: Optional[float] = None) -> dict:
     """
     Question → SQL (non exécuté). `structured` fourni : PREP est sauté (découpage écrit à la main).
     `reasoning` : {"prep": "low", "sql": "medium"} pour surcharger le raisonnement par rôle.
@@ -95,6 +105,39 @@ def translate(client: LLMClient, schema_fn: SchemaFn, question: str, account_id:
     if schema.get("error") or not schema.get("schema_ddl"):
         out["status"], out["reason"] = "error", schema.get("error") or "schéma vide (index à construire ?)"
         return _finish(out, t0)
+
+    # 2 bis. Juge du sujet : seulement si les premières tables sont trop proches
+    debug = schema.get("debug") or {}
+    ranking = debug.get("subject_ranking") or []
+    current = debug.get("subject_table") or (schema.get("tables") or [{}])[0].get("table_name")
+    out["subject_choice"] = {"by": debug.get("subject_by") or "vectors", "table": current}
+    forced = None
+    if should_judge(ranking, judge_gap() if gap is None else gap):
+        t = time.time()
+        verdict = pick_subject(client, question, out["structured_request"], ranking,
+                               reasoning=reasoning.get("prep"))
+        timings["judge"] = int((time.time() - t) * 1000)
+        if verdict.get("llm") and "provider" in verdict["llm"]:
+            out["usage"]["judge"] = _usage(verdict["llm"])
+            out["models"]["judge"] = out["usage"]["judge"]["model"]
+        out["subject_choice"] = {"by": "judge", "table": verdict["subject"] or current,
+                                 "reason": verdict.get("reason"), "candidates": verdict["candidates"],
+                                 "vectors": current}
+        if verdict["subject"] and verdict["subject"] != current:
+            forced = verdict["subject"]
+            t = time.time()
+            try:
+                again = schema_fn(account_id, question, out["structured_request"], subject=forced)
+            except Exception as exc:  # noqa: BLE001
+                again = {"error": str(exc)}
+            timings["schema_2"] = int((time.time() - t) * 1000)
+            if again.get("schema_ddl") and not again.get("error"):
+                schema = again
+                out["subject_choice"]["table"] = (again.get("debug") or {}).get("subject_table") or forced
+            else:
+                forced = None
+                out["subject_choice"]["by"] = "vectors"
+                out["subject_choice"]["reason"] = f"schéma du juge indisponible : {again.get('error')}"
     out["tables_used"] = [t["table_name"] for t in schema.get("tables", [])]
     out["schema_ddl"], out["token_estimate"] = schema["schema_ddl"], schema.get("token_estimate")
     out["not_found"] = [p["text"] for p in (schema.get("debug") or {}).get("pieces", []) if p.get("not_found")]
@@ -109,7 +152,8 @@ def translate(client: LLMClient, schema_fn: SchemaFn, question: str, account_id:
     asked = gen["missing"]
     t = time.time()
     try:
-        extended = extend_fn(account_id, question, out["structured_request"], asked)
+        extended = (extend_fn(account_id, question, out["structured_request"], asked, subject=forced) if forced
+                    else extend_fn(account_id, question, out["structured_request"], asked))
     except Exception as exc:  # noqa: BLE001
         extended = {"error": str(exc)}
     timings["extend"] = int((time.time() - t) * 1000)
@@ -130,14 +174,15 @@ def translate(client: LLMClient, schema_fn: SchemaFn, question: str, account_id:
 
 def ask(client: LLMClient, schema_fn: SchemaFn, execute_fn: ExecuteFn, question: str, account_id: int, *,
         structured: Optional[dict] = None, reasoning: Optional[dict] = None,
-        extend_fn: Optional[ExtendFn] = None, max_corrections: int = MAX_CORRECTIONS) -> dict:
+        extend_fn: Optional[ExtendFn] = None, max_corrections: int = MAX_CORRECTIONS,
+        gap: Optional[float] = None) -> dict:
     """
     Question → réponse tirée de la base. Statut final : ok (answer rempli) ou celui de translate
     (cannot_answer, refused, clarification_needed…), ou error si aucune requête valide n'a été obtenue.
     """
     reasoning = reasoning or {}
     out = translate(client, schema_fn, question, account_id, structured=structured, reasoning=reasoning,
-                    extend_fn=extend_fn)
+                    extend_fn=extend_fn, gap=gap)
     out["answer"], out["executed_sql"], out["checks"] = None, None, []
     if out["status"] != "sql":
         return out

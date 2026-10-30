@@ -82,19 +82,20 @@ def llm_status() -> dict:
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
 
-def call_extend_schema(account_id: int, question: str, structured: dict, missing: list) -> dict:
+def call_extend_schema(account_id: int, question: str, structured: dict, missing: list,
+                       subject: str | None = None) -> dict:
     """Recherche complémentaire des mots manquants signalés par le modèle SQL (schema_service)."""
     resp = requests.post(f"{SCHEMA_SERVICE_URL}/select/extend", timeout=60,
                          json={"account_id": account_id, "question": question, "structured": structured,
-                               "missing": missing, "debug": True})
+                               "missing": missing, "debug": True, "subject": subject})
     return resp.json()
 
 
-def call_structured_schema(account_id: int, question: str, structured: dict) -> dict:
-    """Recherche structurée (schema_service), diagnostic compris (morceaux « non trouvés »)."""
+def call_structured_schema(account_id: int, question: str, structured: dict, subject: str | None = None) -> dict:
+    """Recherche structurée (schema_service), diagnostic compris ; `subject` : table imposée par le juge."""
     resp = requests.post(f"{SCHEMA_SERVICE_URL}/select/structured", timeout=60,
                          json={"account_id": account_id, "question": question, "structured": structured,
-                               "debug": True})
+                               "debug": True, "subject": subject})
     return resp.json()
 
 

@@ -247,10 +247,11 @@ def structured_params() -> structured.StructuredParams:
     )
 
 
-def _run_structured(account_id: int, question: str, sq, params, missing: Optional[list[str]] = None):
+def _run_structured(account_id: int, question: str, sq, params, missing: Optional[list[str]] = None,
+                    subject: Optional[str] = None):
     conn = get_conn()
     try:
-        return run_structured(conn, embedder, account_id, question, sq, params, missing)
+        return run_structured(conn, embedder, account_id, question, sq, params, missing, subject)
     finally:
         conn.close()
 
@@ -270,6 +271,8 @@ def _structured_response(plan: dict, sq, elapsed: float, debug: bool) -> dict:
             "embedder": embedder.cfg.model_id,
             "structured": sq.__dict__,
             "subject_ranking": plan["subject_ranking"],
+            "subject_table": plan.get("subject_table"),
+            "subject_by": plan.get("subject_by"),
             "pieces": plan["pieces"],
             "tables": plan["tables"],
             "value_matches": plan["value_matches"],
@@ -291,7 +294,7 @@ def _parse_structured_request():
 def select_structured():
     """
     Question découpée en morceaux de sens → tables et colonnes → schéma minimal.
-    Body : {"account_id": 1, "question": "… (facultatif)", "debug": false,
+    Body : {"account_id": 1, "question": "… (facultatif)", "debug": false, "subject": "table imposée (facultatif)",
             "structured": {"subject": "...", "measures": [...], "filters": [...],
                            "group_by": [...], "period": "...", "order": "..."}}
     Le sujet est cherché parmi les fiches de tables (consigne « tables »), chaque autre morceau
@@ -303,7 +306,8 @@ def select_structured():
         return jsonify({"error": str(exc)}), 400
     try:
         t0 = time.time()
-        plan, _ = _run_structured(account_id, question, sq, structured_params())
+        plan, _ = _run_structured(account_id, question, sq, structured_params(),
+                                  subject=(data.get("subject") or None))
         elapsed = round(time.time() - t0, 3)
         logger.info("✅ Select structuré en %ss | %d tables | ~%d tokens",
                     elapsed, len(plan["tables"]), plan["token_estimate"])
@@ -333,7 +337,8 @@ def select_extend():
         return jsonify({"error": "'missing' obligatoire (liste de mots métier)"}), 400
     try:
         t0 = time.time()
-        plan, report = _run_structured(account_id, question, sq, structured_params(), missing)
+        plan, report = _run_structured(account_id, question, sq, structured_params(), missing,
+                                       subject=(data.get("subject") or None))
         elapsed = round(time.time() - t0, 3)
         found = sum(1 for r in report if r["found"])
         logger.info("✅ Extend en %ss | %d/%d mots trouvés | %d tables", elapsed, found, len(report),
