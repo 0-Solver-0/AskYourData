@@ -25,28 +25,27 @@
   color-scheme: light;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    --bg: #141414;
-    --surface: #1d1b1a;
-    --ink: #f6f3f0;
-    --muted: #a59d97;
-    --line: #34302d;
-    --action: #ff5100;
-    --action-ink: #ffffff;
-    --action-text: #ff8a5c;
-    --ok: #f6f3f0;
-    --warn: #ff8a5c;
-    --warn-bg: #2a1d16;
-    --code-bg: #171615;
-    --step-1: #ff5100;
-    --step-2: #ff8a5c;
-    --step-3: #f6f3f0;
-    --step-4: #6e6661;
-    --step-5: #fad3b6;
-    --step-6: #a59d97;
-    color-scheme: dark;
-  }
+/* Thème clair par défaut ; thème sombre seulement si data-theme="dark" est posé sur <html> */
+:root[data-theme="dark"] {
+  --bg: #141414;
+  --surface: #1d1b1a;
+  --ink: #f6f3f0;
+  --muted: #a59d97;
+  --line: #34302d;
+  --action: #ff5100;
+  --action-ink: #ffffff;
+  --action-text: #ff8a5c;
+  --ok: #f6f3f0;
+  --warn: #ff8a5c;
+  --warn-bg: #2a1d16;
+  --code-bg: #171615;
+  --step-1: #ff5100;
+  --step-2: #ff8a5c;
+  --step-3: #f6f3f0;
+  --step-4: #6e6661;
+  --step-5: #fad3b6;
+  --step-6: #a59d97;
+  color-scheme: dark;
 }
 
 * { box-sizing: border-box; }
