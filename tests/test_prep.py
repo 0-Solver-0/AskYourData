@@ -61,3 +61,15 @@ def test_unreadable_or_failed_call_degrades_to_the_raw_question():
     out = prep.structure_question(failing, "Top customers")
     assert out["status"] == "degraded" and "PREP indisponible" in out["reason"]
     assert len(out["llm"]["attempts"]) == 4
+
+
+def test_usual_reading_is_kept_as_an_assumption():
+    prompt = prep.load_prompt(prep.PROMPT_PATH)
+    assert '"assumption"' in prompt and "ranked by total amount" in prompt
+    out = prep.normalize({"status": "ok", "assumption": " Sales orders,  ranked by total amount. ",
+                          "subject": "sales orders", "measures": ["total amount"],
+                          "order": "total amount desc, top 5"})
+    assert out["assumption"] == "Sales orders, ranked by total amount." and out["structured"]["measures"] == ["total amount"]
+    assert "assumption" not in out["structured"]                       # jamais envoyé à la recherche
+    refused = prep.normalize({"status": "ambiguous", "reason": "Which numbers?", "assumption": "x"})
+    assert refused["assumption"] is None

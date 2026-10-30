@@ -32,6 +32,7 @@ Le découpage est écrit à la main pour l'instant ; il sera produit par le rôl
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -177,6 +178,22 @@ def neighbor_tables(selected: list[str], relations: list[dict], tables_by_name: 
     return out
 
 
+# Genre de colonne attendu d'après les mots du manque signalé par le modèle SQL (anglais) :
+# « sale date of the order » → date ; « quantity sold », « unit price » → nombre. Les deux à la fois
+# (« number of days late ») ou aucun : pas de contrainte.
+_DATE_WORDS = re.compile(r"\b(date|dates|deadline|when)\b", re.I)
+_NUMBER_WORDS = re.compile(r"\b(amounts?|quantit(y|ies)|qty|prices?|costs?|revenues?|values?|totals?|sum|average|"
+                           r"count|number of|margins?|balance|spend|spending|rates?)\b", re.I)
+
+
+def expected_kind(text: str) -> Optional[str]:
+    """date, number ou None (rien d'évident) pour un mot manquant."""
+    is_date, is_number = bool(_DATE_WORDS.search(text)), bool(_NUMBER_WORDS.search(text))
+    if is_date == is_number:
+        return None
+    return "date" if is_date else "number"
+
+
 def find_missing(phrases: list[str], selected: list[str], column_sims: dict[tuple[str, str], list[float]],
                  phrase_table_sims: list[dict[str, float]], tables_by_name: dict[str, dict],
                  columns_by_table: dict[str, list[dict]], relations: list[dict], params: StructuredParams,
@@ -187,17 +204,23 @@ def find_missing(phrases: list[str], selected: list[str], column_sims: dict[tupl
          par mot) : une colonne au-dessus de min_similarity suffit ;
       b. sinon parmi les fiches de tables (`phrase_table_sims`) : une table au-dessus de
          table_piece_min, reliée à une table retenue en table_piece_hops liens au plus.
+    Le genre de colonne doit convenir au mot : une date ne reçoit qu'une colonne de date, une quantité,
+    un prix ou un montant qu'une colonne numérique (expected_kind) ; sans colonne du bon genre, on
+    passe aux fiches de tables.
     Renvoie (extra_columns, extra_tables, rapport par mot) pour plan_structured.
     """
     graph = build_graph(relations)
+    kinds = {(t, c["column_name"]): column_kind(c) for t, cols in columns_by_table.items() for c in cols}
     usable = {(t, c["column_name"]) for t, cols in columns_by_table.items() for c in cols if _usable(c, "period")}
     extra_columns: dict[tuple[str, str], str] = {}
     extra_tables: dict[str, str] = {}
     report = []
     new_tables: set[str] = set()
     for i, text in enumerate(phrases):
+        want = expected_kind(text)
         scored = sorted(((float(sims[i]), t, c) for (t, c), sims in column_sims.items()
-                         if i < len(sims) and (t, c) in usable), reverse=True)
+                         if i < len(sims) and (t, c) in usable and (want is None or kinds.get((t, c)) == want)),
+                        reverse=True)
         # La meilleure colonne de la table du sujet, celle des autres tables retenues ET la meilleure
         # colonne tout court (si elles diffèrent) : « manager » → hr_employee.parent_id et
         # hr_department.manager_id ; le modèle SQL choisit d'après les libellés et les notes.

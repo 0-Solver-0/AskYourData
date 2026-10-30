@@ -27,12 +27,14 @@ MAX_TOKENS = 6000            # requête + raisonnement
 
 
 def build_user_message(question: str, structured: Optional[dict], schema_ddl: str,
-                       previous: Optional[dict] = None) -> str:
+                       previous: Optional[dict] = None, assumption: Optional[str] = None) -> str:
     """Question d'origine (au cas où le découpage aurait perdu un détail) + découpage + schéma."""
     pieces = {k: v for k, v in (structured or {}).items() if v}
-    parts = [f"Question: {question.strip()}",
-             "Breakdown: " + json.dumps(pieces, ensure_ascii=False),
-             "Schema:\n" + schema_ddl.strip()]
+    parts = [f"Question: {question.strip()}"]
+    if assumption:
+        parts.append(f"Reading chosen for the user (follow it): {assumption.strip()}")
+    parts += ["Breakdown: " + json.dumps(pieces, ensure_ascii=False),
+              "Schema:\n" + schema_ddl.strip()]
     if previous and previous.get("missing"):
         parts.append("You asked for: " + json.dumps(previous["missing"], ensure_ascii=False)
                      + ". The schema above now includes what the search found. If it is still not there, "
@@ -72,9 +74,11 @@ def parse_answer(text: str) -> dict:
 
 
 def generate_sql(client: LLMClient, question: str, structured: Optional[dict], schema_ddl: str, *,
-                 previous: Optional[dict] = None, reasoning: Optional[str] = None) -> dict:
+                 previous: Optional[dict] = None, reasoning: Optional[str] = None,
+                 assumption: Optional[str] = None) -> dict:
     messages = [{"role": "system", "content": load_prompt(PROMPT_PATH)},
-                {"role": "user", "content": build_user_message(question, structured, schema_ddl, previous)}]
+                {"role": "user", "content": build_user_message(question, structured, schema_ddl, previous,
+                                                               assumption)}]
     try:
         result = client.complete("sql", messages, max_tokens=MAX_TOKENS, reasoning=reasoning)
     except LLMError as exc:

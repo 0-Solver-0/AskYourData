@@ -65,6 +65,7 @@ def translate(client: LLMClient, schema_fn: SchemaFn, question: str, account_id:
     t0 = time.time()
     timings: dict[str, int] = {}
     out: dict = {"question": question, "status": None, "structured_request": None, "prep_status": None,
+                 "assumption": None,
                  "sql": None, "missing": [], "reason": None, "tables_used": [], "schema_ddl": None,
                  "token_estimate": None, "models": {}, "usage": {}, "timings_ms": timings}
 
@@ -76,6 +77,7 @@ def translate(client: LLMClient, schema_fn: SchemaFn, question: str, account_id:
         prep = structure_question(client, question, reasoning=reasoning.get("prep"))
         timings["structuring"] = int((time.time() - t) * 1000)
         out["structured_request"], out["prep_status"] = prep["structured"], prep["status"]
+        out["assumption"] = prep.get("assumption")
         out["usage"]["prep"] = _usage(prep.get("llm"))
         out["models"]["prep"] = out["usage"]["prep"]["model"]
         if prep["status"] in REFUSALS:
@@ -188,7 +190,7 @@ def _generate(client: LLMClient, question: str, out: dict, schema: dict, reasoni
     """Un essai de génération : met à jour `out` (statut, SQL, schéma de cet essai, usage, essais)."""
     t = time.time()
     gen = generate_sql(client, question, out["structured_request"], schema["schema_ddl"],
-                       previous=previous, reasoning=reasoning.get("sql"))
+                       previous=previous, reasoning=reasoning.get("sql"), assumption=out.get("assumption"))
     elapsed = int((time.time() - t) * 1000)
     key = "generation" if not out["attempts"] else f"generation_{len(out['attempts']) + 1}"
     out["timings_ms"][key] = elapsed

@@ -117,3 +117,13 @@ def test_still_missing_after_the_retry_is_a_cannot_answer():
     out = pipeline.translate(c, schema_ok, "Stock value", 1, structured={"subject": "stock"}, extend_fn=extend_ok)
     assert out["status"] == "cannot_answer" and "unit cost" in out["reason"]
     assert len(c.transport.calls) == 2                                     # jamais de troisième essai
+
+
+def test_assumption_reaches_the_sql_model_and_the_answer():
+    prep_out = dict(PREP_OK, assumption="Sales orders, ranked by total amount.")
+    c = client((200, ok_body(text=json.dumps(prep_out)), ""), (200, ok_body(text="<sql>SELECT 1</sql>"), ""))
+    out = pipeline.translate(c, schema_ok, "give me the top 5 sale order", 1)
+    assert out["assumption"] == "Sales orders, ranked by total amount."
+    sent = c.transport.calls[1]["payload"]["messages"][1]["content"]
+    assert "Reading chosen for the user (follow it): Sales orders, ranked by total amount." in sent
+    assert sqlgen.build_user_message("q", {}, DDL).count("Reading chosen") == 0
