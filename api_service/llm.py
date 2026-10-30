@@ -304,6 +304,12 @@ def extract_json(text: str) -> Any:
 
 
 def extract_tag(text: str, tag: str) -> Optional[str]:
-    """Contenu de <tag>…</tag> (le dernier si plusieurs), sans espaces autour ; None si absent."""
+    """
+    Contenu de <tag>…</tag> (le dernier si plusieurs), sans espaces autour ; None si absent.
+    Balise fermante oubliée par le modèle : le contenu va jusqu'à la balise suivante ou la fin.
+    """
     found = re.findall(rf"<{tag}>\s*(.*?)\s*</{tag}>", text or "", re.S | re.I)
-    return found[-1] if found else None
+    if found:
+        return found[-1]
+    unclosed = re.search(rf"<{tag}>\s*(.*?)\s*(?=<[a-z_]+>|$)", text or "", re.S | re.I)
+    return unclosed.group(1) if unclosed and unclosed.group(1) else None
