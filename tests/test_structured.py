@@ -339,3 +339,32 @@ def test_missing_word_prefers_the_subject_table_column():
         [{}], tables, cols, rels, structured.StructuredParams())
     assert ("account_move", "partner_id") in extra_cols and ("purchase_order", "partner_id") in extra_cols
     assert (report[0]["table"], report[0]["column"]) == ("account_move", "partner_id")
+
+
+def test_missing_word_kind_from_its_words():
+    assert structured.expected_kind("sale date of the sales order") == "date"
+    assert structured.expected_kind("quantity sold on sales order lines") == "number"
+    assert structured.expected_kind("unit selling price on sales order lines") == "number"
+    assert structured.expected_kind("number of days between the due date and today") is None   # les deux
+    assert structured.expected_kind("vendor of the bill") is None
+
+
+def test_missing_word_only_gets_a_column_of_the_right_kind():
+    # cas réels : « sale date » → sale_order.origin (texte) ; « quantity sold » → sale_order.state (statut)
+    _, tables, cols, rels = build_inputs()
+    params = structured.StructuredParams()
+    sims = {("account_move", "move_type"): [0.78, 0.8], ("account_move", "payment_state"): [0.74, 0.79],
+            ("account_move", "invoice_date"): [0.7, 0.4], ("account_move", "amount_residual"): [0.5, 0.71]}
+    extra_cols, _, report = structured.find_missing(
+        ["invoice date of the bill", "unpaid amount of the bill"], ["account_move"], sims, [{}, {}],
+        tables, cols, rels, params)
+    assert set(extra_cols) == {("account_move", "invoice_date"), ("account_move", "amount_residual")}
+    assert [r["column"] for r in report] == ["invoice_date", "amount_residual"]
+
+
+def test_missing_word_without_a_column_of_the_right_kind_looks_for_a_table():
+    _, tables, cols, rels = build_inputs()
+    extra_cols, _, report = structured.find_missing(
+        ["scheduled date of the order"], ["account_move"], {("account_move", "move_type"): [0.8]}, [{}],
+        tables, cols, rels, structured.StructuredParams())
+    assert not extra_cols and report[0]["found"] is None

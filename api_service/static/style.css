@@ -140,6 +140,11 @@ main { max-width: 1040px; margin: 0 auto; padding: 0 24px 80px; }
 .working-time { font-variant-numeric: tabular-nums; }
 .pulse { width: 10px; height: 10px; border-radius: 50%; background: var(--action); animation: beat 1s ease-in-out infinite; }
 
+.assumption {
+  margin: 0 0 12px; padding: 6px 12px; display: inline-block; font-size: 14px; color: var(--ink);
+  background: var(--warn-bg); border-radius: var(--radius-sm);
+}
+.assumption strong { font-weight: 600; }
 .summary { font-size: 19px; font-weight: 500; margin: 0 0 16px; max-width: 70ch; }
 .notice {
   border-left: 4px solid var(--warn); background: var(--warn-bg); padding: 12px 16px; border-radius: var(--radius-sm);

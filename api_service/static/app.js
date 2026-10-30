@@ -142,6 +142,9 @@
   function render(card, data, voice) {
     const body = $(".answer-body", card);
     body.replaceChildren();
+    if (data.assumption) {
+      body.append(el("p", { class: "assumption" }, el("strong", { text: "Assumed: " }), data.assumption));
+    }
     if (data.status === "ok" && data.answer) {
       body.append(el("p", { class: "summary", text: data.answer.summary }));
       body.append(resultTable(data.answer));
