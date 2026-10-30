@@ -564,7 +564,8 @@ def test_search_falls_back_to_single_vectors_before_reindex(dbs):
         cur.execute("""SELECT t.embedding, c.embedding FROM nl2sql_tables t JOIN nl2sql_columns c ON c.table_id = t.id
                        WHERE t.account_id = %s AND t.table_name = 'sale_order' AND c.column_name = 'amount_total'""",
                     (account["id"],))
-        table_vec, col_vec = [v.to_list() if hasattr(v, "to_list") else list(v) for v in cur.fetchone()]
+        table_vec, col_vec = [[float(x) for x in (v.to_list() if hasattr(v, "to_list") else v)]
+                              for v in cur.fetchone()]
     nl.commit()
     assert missing_embeddings(nl) > 0
     top = vector_ranking(nl, account["id"], table_vec, limit=1)[0]
