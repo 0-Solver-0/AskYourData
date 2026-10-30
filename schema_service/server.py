@@ -9,6 +9,7 @@ Endpoints :
   POST /index                   — indexe les tables d'un compte (filtrage, métadonnées Odoo, embeddings)
   GET  /index/report            — tables retenues et exclues (avec raison) pour relecture
   POST /select                  — question → tables (recherche, jointures, références) → schéma compact
+  POST /probe                   — un mot → meilleures tables et colonnes, avec le texte gagnant
   POST /select/structured       — question découpée (sujet, mesures, filtres…) → schéma minimal
   POST /annotate/table          — annoter une table (prioritaire sur l'automatique)
   POST /annotate/column         — annoter une colonne (prioritaire sur l'automatique)
@@ -36,7 +37,7 @@ from .embedder import Embedder, EmbedderConfig
 from .enrichment import export_schema, import_enrichment, list_modules
 from .filters import load_filter_config
 from .indexer import index_account, index_report, reindex_table_embeddings
-from .search_data import load_search_data, run_structured, vector_ranking
+from .search_data import column_similarities, load_search_data, run_structured, vector_ranking
 from .vector_space import ensure_vector_space, missing_embeddings
 
 # ── Logging ────────────────────────────────────────────────────────────────
@@ -288,6 +289,44 @@ def _parse_structured_request():
         raise ValueError("'account_id' obligatoire")
     sq = structured.StructuredQuestion.from_dict(data.get("structured"))
     return data, int(account_id), (data.get("question") or "").strip(), sq
+
+
+@app.post("/probe")
+def probe():
+    """
+    Sonde de la recherche, pour les tests à la main : un mot ou une expression → meilleures tables
+    (fiches) et meilleures colonnes, avec le texte (libellé ou synonyme) qui a donné chaque score.
+    Body : {"account_id": 1, "text": "vendor", "limit": 10}
+    """
+    data = request.get_json(silent=True) or {}
+    text = " ".join(str(data.get("text") or "").split())
+    account_id = data.get("account_id")
+    if not account_id or not text:
+        return jsonify({"error": "'account_id' et 'text' obligatoires"}), 400
+    limit = max(1, min(int(data.get("limit") or 10), 50))
+    try:
+        table_vec = embedder.embed_query(text, "tables")
+        column_vec = embedder.embed_query(text, "columns")
+        conn = get_conn()
+        try:
+            tables = vector_ranking(conn, int(account_id), table_vec, limit=limit)
+            with conn.cursor() as cur:
+                cur.execute("SELECT table_name FROM nl2sql_tables WHERE account_id = %s", (int(account_id),))
+                names = [r[0] for r in cur.fetchall()]
+            texts: dict = {}
+            sims = column_similarities(conn, int(account_id), names, [column_vec], texts)
+        finally:
+            conn.close()
+        columns = sorted(sims.items(), key=lambda kv: kv[1][0], reverse=True)[:limit]
+        return jsonify({
+            "text": text, "embedder": embedder.cfg.model_id,
+            "tables": tables,
+            "columns": [{"table_name": t, "column_name": c, "similarity": round(v[0], 3),
+                         "matched": (texts.get((t, c)) or [None])[0]} for (t, c), v in columns],
+        })
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Erreur /probe")
+        return jsonify({"error": str(exc)}), 500
 
 
 @app.post("/select/structured")

@@ -224,6 +224,10 @@
       const pieces = [];
       for (const [k, v] of Object.entries(sr)) {
         if (!v || (Array.isArray(v) && !v.length) || ["status", "reason"].includes(k)) continue;
+        if (k === "entities") {
+          for (const [piece, owner] of Object.entries(v)) pieces.push(el("span", {}, el("em", { text: "entity" }), `${piece} → ${owner}`));
+          continue;
+        }
         for (const item of Array.isArray(v) ? v : [v]) pieces.push(el("span", {}, el("em", { text: human(k) }), String(item)));
       }
       if (pieces.length) blocks.push(el("div", {}, el("h3", { text: "How the question was understood" }), el("div", { class: "pieces" }, ...pieces)));
