@@ -148,9 +148,10 @@ def run_structured(conn, embedder, account_id: int, question: str, sq, params,
         missing_table_sims = [{r["table_name"]: r["similarity"]
                                for r in vector_ranking(conn, account_id, vec, limit=5)}
                               for vec in missing_tab_vecs]
+        present = {(t["table_name"], c["column_name"]) for t in plan["tables"] for c in t["columns"]}
         extra_cols, extra_tabs, report = structured.find_missing(
             missing, selected, missing_sims, missing_table_sims, tables_by_name, columns_by_table,
-            relations, params)
+            relations, params, present=present)
         if extra_cols or extra_tabs:
             plan = structured.plan_structured(sq, table_sims, column_sims, tables_by_name, columns_by_table,
                                               relations, params, value_matches, piece_table_sims,
