@@ -508,6 +508,9 @@ def plan_structured(sq: StructuredQuestion, table_sims: dict[str, float],
             if _words(text) <= _words(ent["entity"]) | {"name"}:
                 # Il nomme l'entité : la clé étrangère du sujet vers sa table (account_move.partner_id → res_partner)
                 refs = [x for x in scored if x[2] in subject_set and fk_targets.get((x[2], x[3])) == ent["table"]]
+                # La clé de l'en-tête d'abord (account_move.partner_id), celle des lignes seulement à défaut :
+                # elles portent souvent le même synonyme, donc le même score
+                refs.sort(key=lambda x: (x[2] != ranking[0], -x[1]))
                 if refs:
                     scored, entity_rule = refs[:1], "fk"
                 else:

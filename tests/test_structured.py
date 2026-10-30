@@ -596,3 +596,29 @@ def test_entity_table_is_the_candidate_the_subject_references():
     # Aucune candidate référencée : la première
     assert structured._choose_entity_table(ent, {"product_category"}, fk, tables)["table"] == "stock_putaway_rule"
     assert structured._choose_entity_table(None, {"sale_order"}, fk, tables) is None
+
+
+def test_entity_key_of_the_header_wins_over_the_same_key_on_the_lines():
+    # account_move.partner_id et account_move_line.partner_id ont le même score (même synonyme « vendor »)
+    from tests.test_search import col
+    tables = {n: {"table_name": n, "odoo_label": n} for n in ("account_move", "account_move_line", "res_partner")}
+    cols = {"account_move": [col("id", pk=True), col("partner_id", label="Partner", fk=True),
+                             col("amount_residual", "numeric", "Amount Due", odoo_type="monetary")],
+            "account_move_line": [col("id", pk=True), col("move_id", label="Entry", fk=True),
+                                  col("partner_id", label="Partner", fk=True)],
+            "res_partner": [col("id", pk=True), col("name", "character varying", "Name")]}
+    rels = [{"from_table": a, "from_column": c, "to_table": b, "to_column": "id"} for a, c, b in (
+        ("account_move", "partner_id", "res_partner"), ("account_move_line", "partner_id", "res_partner"),
+        ("account_move_line", "move_id", "account_move"))]
+    sq = structured.StructuredQuestion.from_dict({"subject": "vendor bill", "measures": ["amount due"],
+                                                  "group_by": ["vendor"], "entities": {"vendor": "vendor"}})
+    texts = [t for _, t in sq.pieces()]
+    sims = {(t, c["column_name"]): [0.1] * len(texts) for t, cs in cols.items() for c in cs}
+    sims[("account_move", "amount_residual")] = [0.8 if x == "amount due" else 0.1 for x in texts]
+    for t in ("account_move", "account_move_line"):
+        sims[(t, "partner_id")] = [0.642 if x == "vendor" else 0.1 for x in texts]
+    ents = [{"entity": "vendor", "table": "res_partner"} if x == "vendor" else None for x in texts]
+    plan = structured.plan_structured(sq, {"account_move": 0.7, "account_move_line": 0.5}, sims, tables, cols,
+                                      rels, structured.StructuredParams(), None, None, piece_entities=ents)
+    piece = next(p for p in plan["pieces"] if p["text"] == "vendor")
+    assert [(m["table"], m["column"]) for m in piece["matches"]] == [("account_move", "partner_id")]
