@@ -622,3 +622,17 @@ def test_entity_key_of_the_header_wins_over_the_same_key_on_the_lines():
                                       rels, structured.StructuredParams(), None, None, piece_entities=ents)
     piece = next(p for p in plan["pieces"] if p["text"] == "vendor")
     assert [(m["table"], m["column"]) for m in piece["matches"]] == [("account_move", "partner_id")]
+
+
+def test_entity_attribute_one_link_away_is_found_and_reached_through_the_entity():
+    # Cas réel : « product category » → entité product → product_product ; la catégorie est sur
+    # product_template (un lien plus loin), et une règle de réapprovisionnement a aussi une catégorie
+    plan = _entity_plan("product category", "product", "product_product",
+                        {("product_template", "categ_id"): 0.62,
+                         ("stock_warehouse_orderpoint", "product_category_id"): 0.7})
+    piece = next(p for p in plan["pieces"] if p["text"] == "product category")
+    assert piece["entity"]["rule"] == "attribute"
+    assert [(m["table"], m["column"]) for m in piece["matches"]] == [("product_template", "categ_id")]
+    found = names(plan)
+    assert {"sale_order_line", "product_product", "product_template", "product_category"} <= set(found)
+    assert "stock_warehouse_orderpoint" not in found and "stock_putaway_rule" not in found

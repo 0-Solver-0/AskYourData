@@ -417,6 +417,28 @@ def find_missing(phrases: list[str], selected: list[str], column_sims: dict[tupl
     return extra_columns, extra_tables, report
 
 
+def _entity_columns(table: str, role: str, text: str, i: int, forward: dict[str, set[str]],
+                    column_sims: dict[tuple[str, str], list[float]], columns_by_table: dict[str, list[dict]],
+                    check_types: bool) -> list[tuple]:
+    """
+    Colonnes candidates pour un attribut d'entité : celles de sa table et des tables qu'elle
+    référence directement (clés suivies dans leur sens, clés techniques exclues), du meilleur au moins
+    bon score, au même format que le classement du plan : (score, score, table, colonne, genre).
+    """
+    scope = [table] + sorted(forward.get(table, set()) - {table})
+    out = []
+    for t in scope:
+        for col in columns_by_table.get(t, []):
+            sims = column_sims.get((t, col["column_name"]))
+            if sims and i < len(sims) and _usable(col, role):
+                out.append((float(sims[i]), float(sims[i]), t, col["column_name"], column_kind(col)))
+    if check_types:
+        allowed = ROLE_KINDS.get(role)
+        typed = [x for x in out if allowed is None or x[4] in allowed]
+        out = typed or out
+    return sorted(out, reverse=True)
+
+
 def _choose_entity_table(ent: Optional[dict], subject_set: set[str], fk_targets: dict[tuple[str, str], str],
                          tables_by_name: dict[str, dict]) -> Optional[dict]:
     """
@@ -474,6 +496,7 @@ def plan_structured(sq: StructuredQuestion, table_sims: dict[str, float],
     if lines and lines not in candidates:
         candidates = candidates + [lines]
     fk_targets = {(r["from_table"], r["from_column"]): r["to_table"] for r in relations}
+    forward = build_forward_graph(relations)
     subject_set = set(ranking[:params.subject_tables]) | ({lines} if lines else set())
     entities = [_choose_entity_table(piece_entities[i] if piece_entities and i < len(piece_entities) else None,
                                      subject_set, fk_targets, tables_by_name) for i in range(len(pieces))]
@@ -516,8 +539,11 @@ def plan_structured(sq: StructuredQuestion, table_sims: dict[str, float],
                 else:
                     scored, entity_rule = [], "table"      # sa table est ajoutée avec le chemin (étape 3 bis)
             else:
-                # Un attribut de l'entité : ses colonnes d'abord, toutes les tables en secours
-                own = [x for x in scored if x[2] == ent["table"]]
+                # Un attribut de l'entité : les colonnes de sa table et des tables qu'elle référence
+                # directement (« category » du produit : product_product → product_template.categ_id),
+                # toutes les tables seulement en secours
+                own = _entity_columns(ent["table"], role, text, i, forward, column_sims, columns_by_table,
+                                      params.check_types)
                 if own and own[0][1] >= params.min_similarity:
                     scored, entity_rule = own, "attribute"
         subject_first = False
@@ -560,12 +586,13 @@ def plan_structured(sq: StructuredQuestion, table_sims: dict[str, float],
     # 3 bis. Un regroupement qui désigne une table (« product category » → product_category)
     #        ajoute cette table et le chemin depuis le sujet, même à plusieurs liens.
     graph = build_graph(relations)
-    forward = build_forward_graph(relations)
     # Entité sans clé directe depuis le sujet, ou attribut trouvé dans sa table : la table de l'entité
     # et le chemin depuis le sujet (clés suivies dans leur sens d'abord)
     for pm in piece_matches:
         rule = (pm.get("entity") or {}).get("rule")
         target = (pm.get("entity") or {}).get("table")
+        if rule == "attribute" and pm["matches"]:
+            target = pm["matches"][0]["table"]          # table de l'entité ou sa voisine directe
         if rule not in ("table", "attribute") or not target:
             continue
         others = [t for t in reasons if t != target]

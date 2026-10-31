@@ -186,7 +186,13 @@ def run_structured(conn, embedder, account_id: int, question: str, sq, params,
             entity_tables[name] = {"entity": name, "candidates": [
                 {"table": r["table_name"], "similarity": r["similarity"], "via": r["matched"]} for r in top]}
     piece_entities = [entity_tables.get(sq.entity_of(text) or "") for _, text in pieces]
-    names += [c["table"] for e in entity_tables.values() for c in e["candidates"] if c["table"] not in names]
+    # Tables des entités et leurs voisines directes (un attribut peut être à un lien : product_template)
+    forward = structured.build_forward_graph(relations)
+    for e in entity_tables.values():
+        for c in e["candidates"]:
+            for t in [c["table"], *sorted(forward.get(c["table"], ()))]:
+                if t not in names and t in tables_by_name:
+                    names.append(t)
     column_texts: dict = {}
     column_sims = column_similarities(conn, account_id, names, piece_vecs, column_texts)
     piece_table_sims: list[dict[str, float]] = [{} for _ in pieces]
