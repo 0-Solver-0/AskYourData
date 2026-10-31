@@ -297,3 +297,29 @@ body:not(.is-empty) .fineprint { display: none; }
   .summary { font-size: 18px; }
   th, td { padding: 8px 10px; font-size: 14px; }
 }
+
+/* ── Clé d'accès (test public) ───────────────────────────────────────────── */
+body.needs-key .composer, body.needs-key .examples, body.needs-key .voice-state { display: none !important; }
+.key-gate {
+  width: 100%; max-width: 560px; background: var(--surface); border: 1px solid var(--line);
+  border-radius: var(--radius-lg); padding: 18px 20px; box-shadow: var(--shadow); display: grid; gap: 10px;
+}
+.key-gate[hidden] { display: none; }
+.key-gate label { font-weight: 600; }
+.key-row { display: flex; gap: 8px; }
+.key-row input {
+  flex: 1 1 auto; min-width: 0; border: 1px solid var(--line); border-radius: var(--radius-pill);
+  padding: 10px 16px; font: 16px var(--mono); background: var(--bg); color: var(--ink);
+}
+.key-row input:focus { outline: none; border-color: var(--action); }
+.key-go {
+  border: 0; border-radius: var(--radius-pill); padding: 0 22px; background: var(--action); color: var(--action-ink);
+  font-weight: 600; cursor: pointer; min-height: 44px;
+}
+.key-state { margin: 0; font-size: 14px; color: var(--action-text); min-height: 1em; }
+.key-state:empty { display: none; }
+.key-privacy { margin: 0; font-size: 12px; color: var(--muted); }
+.remaining {
+  font-size: 13px; white-space: nowrap; color: var(--action-text); background: var(--you-bg);
+  border-radius: var(--radius-pill); padding: 3px 10px;
+}

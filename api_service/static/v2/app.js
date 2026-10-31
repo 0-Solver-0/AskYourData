@@ -91,13 +91,81 @@
   // ── Source et modèles ───────────────────────────────────────────────────────
   fetch("/api/v1/health").then((r) => r.json()).then((h) => {
     const db = h.execution && h.execution.db;
-    const prep = h.llm && h.llm.prep && h.llm.prep.primary && h.llm.prep.primary.model;
-    const sql = h.llm && h.llm.sql && h.llm.sql.primary && h.llm.sql.primary.model;
+    const prep = (h.models && h.models.prep) || (h.llm && h.llm.prep && h.llm.prep.primary && h.llm.prep.primary.model);
+    const sql = (h.models && h.models.sql) || (h.llm && h.llm.sql && h.llm.sql.primary && h.llm.sql.primary.model);
+    const transcribe = (h.models && h.models.transcribe) || (h.voice && h.voice.model);
+    const embedder = (h.models && h.models.embedder) ||
+      (h.services && h.services.schema && h.services.schema.embedder && h.services.schema.embedder.model);
+    if (h.public) $("#classic-link").hidden = true;      // test public : une seule interface
     const parts = [];
     if (db) parts.push(el("span", {}, "Odoo ", el("strong", { text: db })));
-    if (prep && sql) parts.push(el("span", {}, " · ", el("strong", { text: short(prep) }), " + ", el("strong", { text: short(sql) })));
+    // Les modèles Meta de la chaîne : compréhension, SQL, voix, recherche des tables
+    const models = [prep, sql, transcribe, embedder].filter(Boolean).map(short);
+    models.forEach((m, i) => parts.push(el("span", {}, parts.length ? (i ? " + " : " · ") : "", el("strong", { text: m }))));
     $("#source").replaceChildren(...(parts.length ? parts : [document.createTextNode("Database not reachable")]));
   }).catch(() => { $("#source").textContent = "Service not reachable"; });
+
+  // ── Clé d'accès (test public) ───────────────────────────────────────────────
+  // Hors mode public, l'API répond { required: false } et rien ne change.
+  const KEY_STORE = "askyourdata.key";
+  const keyGate = $("#key-gate");
+  const keyInput = $("#access-key");
+  const keyState = $("#key-state");
+  const remainingEl = $("#remaining");
+  let accessKey = store.get(KEY_STORE) || "";
+
+  const withKey = (headers = {}) => (accessKey ? { ...headers, "X-Access-Key": accessKey } : headers);
+
+  function showRemaining(info) {
+    if (!info || info.remaining == null) return;
+    remainingEl.hidden = false;
+    remainingEl.textContent = `${info.remaining} ${info.remaining === 1 ? "question" : "questions"} left`;
+  }
+
+  function needKey(message) {
+    document.body.classList.add("needs-key");
+    keyGate.hidden = false;
+    keyState.textContent = message || "";
+    if (!matchMedia("(pointer: coarse)").matches) keyInput.focus();
+  }
+
+  async function checkKey() {
+    let resp, info;
+    try {
+      resp = await fetch("/api/v1/access/me", { headers: withKey() });
+      if (resp.status === 404) return true;               // API sans gestion des clés : rien à demander
+      info = await resp.json();
+    } catch {
+      needKey("The service is not reachable. Please try again later.");
+      return false;
+    }
+    if (resp.ok && info.required === false) return true;
+    if (resp.ok) {
+      store.set(KEY_STORE, accessKey);
+      document.body.classList.remove("needs-key");
+      keyGate.hidden = true;
+      showRemaining(info);
+      return true;
+    }
+    if (info.code === "invalid_key" || info.code === "revoked") { accessKey = ""; store.set(KEY_STORE, ""); }
+    needKey(accessKey || info.code !== "invalid_key" ? info.error : "");
+    return false;
+  }
+
+  keyGate.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    accessKey = keyInput.value.trim();
+    keyInput.value = "";
+    if (!(await checkKey()) && !keyState.textContent) keyState.textContent = "This access key is not valid.";
+  });
+  checkKey();
+
+  // Refus d'accès renvoyé par l'API pendant l'usage : clé révoquée, quota atteint, budget atteint…
+  function handleAccessRefusal(data) {
+    if (!data || !data.code) return;
+    if (data.code === "invalid_key" || data.code === "revoked") { accessKey = ""; store.set(KEY_STORE, ""); needKey(data.error); }
+    if (data.code === "quota" || data.code === "budget") showRemaining({ remaining: 0 });
+  }
 
   // ── Lecture à voix haute (synthèse vocale du navigateur) ────────────────────
   const tts = "speechSynthesis" in window ? window.speechSynthesis : null;
@@ -223,11 +291,17 @@
     let data;
     try {
       const resp = await fetch("/api/v1/ask", {
-        method: "POST", headers: { "Content-Type": "application/json" },
+        method: "POST", headers: withKey({ "Content-Type": "application/json" }),
         body: JSON.stringify({ question, account_id: ACCOUNT_ID }),
       });
       data = await resp.json();
-      if (!resp.ok && !data.status) data = { status: "error", reason: data.error || `HTTP ${resp.status}` };
+      if (!resp.ok && data.code) {
+        handleAccessRefusal(data);
+        data = { status: "refused", reason: data.error };
+      } else if (!resp.ok && !data.status) {
+        data = { status: "error", reason: data.error || `HTTP ${resp.status}` };
+      }
+      showRemaining(data.access);
     } catch {
       data = { status: "error", reason: "The service did not answer. Check that the API is running, then ask again." };
     } finally {
@@ -446,9 +520,9 @@
       const wav = await toWav16k(new Blob(chunks, { type: chunks[0] ? chunks[0].type : "audio/webm" }));
       const fd = new FormData();
       fd.append("audio", wav, "question.wav");
-      const resp = await fetch("/api/v1/transcribe", { method: "POST", body: fd });
+      const resp = await fetch("/api/v1/transcribe", { method: "POST", body: fd, headers: withKey() });
       result = await resp.json();
-      if (!resp.ok) throw new Error(result.error || `HTTP ${resp.status}`);
+      if (!resp.ok) { handleAccessRefusal(result); throw new Error(result.error || `HTTP ${resp.status}`); }
     } catch (err) {
       setBusy(false);
       showVoice(`Voice could not be turned into text: ${err.message}`, true);

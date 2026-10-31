@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>AskYourData admin</title>
+  <style>
+    :root { --bg: #fcfaf7; --surface: #fff; --ink: #141414; --muted: #6b6b6b; --line: #ece4dc; --action: #ff5100; --peach: #fff1e7; }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+    main { max-width: 1100px; margin: 0 auto; padding: 24px 16px 60px; }
+    h1 { font-size: 22px; margin: 0 0 4px; } h1 span { color: var(--action); }
+    h2 { font-size: 16px; margin: 28px 0 10px; }
+    .note { color: var(--muted); font-size: 13px; margin: 0; }
+    .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; margin-top: 18px; }
+    .tile { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; }
+    .tile b { display: block; font-size: 26px; font-variant-numeric: tabular-nums; }
+    .tile small { color: var(--muted); }
+    .bar { height: 8px; border-radius: 99px; background: var(--peach); overflow: hidden; margin-top: 8px; }
+    .bar i { display: block; height: 100%; background: var(--action); }
+    .wrap { overflow-x: auto; background: var(--surface); border: 1px solid var(--line); border-radius: 14px; }
+    table { border-collapse: collapse; width: 100%; font-size: 14px; }
+    th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+    th { color: var(--muted); font-weight: 600; font-size: 12px; background: #f7f4f0; position: sticky; top: 0; }
+    td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+    .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #c9c1ba; margin-right: 6px; }
+    .dot.on { background: #1f9d55; }
+    .muted { color: var(--muted); }
+    .q { max-width: 420px; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Ask<span>Your</span>Data · admin</h1>
+  <p class="note">Local only (SSH tunnel). Refreshes every 10 s. <span id="updated"></span></p>
+
+  <div class="tiles">
+    <div class="tile"><small>Active now (5 min)</small><b id="active">–</b></div>
+    <div class="tile"><small>Questions asked</small><b id="questions">–</b></div>
+    <div class="tile"><small>Voice transcriptions</small><b id="voice">–</b></div>
+    <div class="tile"><small>Estimated cost / budget</small><b id="spent">–</b><div class="bar"><i id="budget-bar" style="width:0"></i></div></div>
+  </div>
+
+  <h2>Keys</h2>
+  <div class="wrap"><table>
+    <thead><tr><th>Person</th><th>Group</th><th>Key</th><th class="num">Used</th><th class="num">Cost $</th><th>Last use</th><th>State</th></tr></thead>
+    <tbody id="keys"></tbody>
+  </table></div>
+
+  <h2>Latest questions</h2>
+  <div class="wrap"><table>
+    <thead><tr><th>When</th><th>Person</th><th>Question</th><th>Understood as</th><th>Status</th><th class="num">Cost $</th><th class="num">Time</th></tr></thead>
+    <tbody id="log"></tbody>
+  </table></div>
+</main>
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const td = (text, cls) => { const c = document.createElement("td"); c.textContent = text ?? "—"; if (cls) c.className = cls; return c; };
+  const when = (v) => (v ? new Date(v).toLocaleString() : "—");
+  async function load() {
+    try {
+      const r = await fetch("/api/v1/admin/stats");
+      const s = await r.json();
+      if (!r.ok) throw new Error(s.error || r.status);
+      $("active").textContent = s.active_now;
+      $("questions").textContent = s.totals.questions;
+      $("voice").textContent = s.totals.transcriptions;
+      $("spent").textContent = `$${s.totals.spent_usd.toFixed(2)} / $${s.totals.budget_usd.toFixed(0)}`;
+      $("budget-bar").style.width = `${Math.min(100, 100 * s.totals.spent_usd / (s.totals.budget_usd || 1)).toFixed(1)}%`;
+      $("keys").replaceChildren(...s.keys.map((k) => {
+        const tr = document.createElement("tr");
+        const name = td(k.name); const dot = document.createElement("span"); dot.className = "dot" + (k.active ? " on" : "");
+        name.prepend(dot);
+        tr.append(name, td(k.grp), td(`…${k.key_hint}`, "muted"), td(`${k.used} / ${k.quota}`, "num"),
+          td(Number(k.cost_usd).toFixed(4), "num"), td(when(k.last_used)),
+          td(k.revoked ? "revoked" : k.disabled ? "disabled" : "active"));
+        return tr;
+      }));
+      $("log").replaceChildren(...s.questions.map((q) => {
+        const tr = document.createElement("tr");
+        tr.append(td(when(q.created_at)), td(q.name), td(q.question, "q"), td(q.rewritten, "q muted"), td(q.status),
+          td(Number(q.cost_usd).toFixed(4), "num"), td(q.elapsed_ms ? `${(q.elapsed_ms / 1000).toFixed(1)} s` : "—", "num"));
+        return tr;
+      }));
+      $("updated").textContent = `Updated ${new Date().toLocaleTimeString()}.`;
+    } catch (err) {
+      $("updated").textContent = `Error: ${err.message}`;
+    }
+  }
+  load();
+  setInterval(load, 10000);
+})();
+</script>
+</body>
+</html>

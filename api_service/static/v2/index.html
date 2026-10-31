@@ -3,9 +3,10 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <title>AskYourData</title>
+  <title>AYDA — Ask your data</title>
   <meta name="description" content="Ask a business question about your Odoo data, typed or spoken, and hear the answer straight from the database.">
   <meta name="theme-color" content="#fcfaf7">
+  <meta name="robots" content="noindex, nofollow">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -13,10 +14,11 @@
 </head>
 <body class="is-empty">
   <header class="top">
-    <a class="wordmark" href="/v2">Ask<span>Your</span>Data</a>
+    <a class="wordmark" href="/" title="AYDA — Ask Your DAta">A<span>Y</span>DA</a>
     <div class="top-right">
       <span class="source" id="source" aria-live="polite">Connecting…</span>
-      <a class="classic" href="/" title="Previous interface">Classic view</a>
+      <span class="remaining" id="remaining" hidden></span>
+      <a class="classic" id="classic-link" href="/classic" title="Previous interface">Classic view</a>
     </div>
   </header>
 
@@ -30,13 +32,23 @@
   </main>
 
   <footer class="dock">
+    <form id="key-gate" class="key-gate" autocomplete="off" hidden>
+      <label for="access-key">Enter your access key to try AYDA</label>
+      <div class="key-row">
+        <input id="access-key" type="password" inputmode="text" spellcheck="false" autocomplete="off"
+          placeholder="ayd_…" maxlength="80" required>
+        <button type="submit" class="key-go">Start</button>
+      </div>
+      <p class="key-state" id="key-state" aria-live="polite"></p>
+      <p class="key-privacy">Your questions are stored to improve AYDA. Do not include personal or confidential information. Each key allows a limited number of questions, typed or spoken.</p>
+    </form>
     <form id="ask-form" class="composer" autocomplete="off">
       <button type="button" id="more" class="icon-btn" aria-expanded="false" aria-controls="examples" title="Example questions">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 5h2v6h6v2h-6v6h-2v-6H5v-2h6z"/></svg>
         <span class="visually-hidden">Example questions</span>
       </button>
       <label class="visually-hidden" for="question">Your question</label>
-      <textarea id="question" rows="1" maxlength="500" placeholder="Ask your data"></textarea>
+      <textarea id="question" rows="1" maxlength="500" placeholder="Ask AYDA"></textarea>
       <button type="button" id="speak" class="icon-btn" aria-pressed="false" title="Read answers aloud">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9v6h4l5 4V5L8 9H4Zm12.5 3a4.5 4.5 0 0 0-2.5-4v8a4.5 4.5 0 0 0 2.5-4ZM14 3.2v2.1a7 7 0 0 1 0 13.4v2.1a9 9 0 0 0 0-17.6Z"/></svg>
         <span class="visually-hidden">Read answers aloud</span>
@@ -58,7 +70,7 @@
       <button type="button">Leads created this month by source</button>
       <button type="button">Employees by job position and manager</button>
     </div>
-    <p class="fineprint">Answers come only from your database. When the data is not there, AskYourData says what is missing.</p>
+    <p class="fineprint">Answers come only from your database. When the data is not there, AYDA says what is missing.</p>
   </footer>
 
   <template id="turn-template">

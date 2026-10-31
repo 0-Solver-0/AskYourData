@@ -1,0 +1,8 @@
+# Production : seule la base PostgreSQL d'Odoo est nécessaire (AskYourData la lit en lecture seule).
+# L'application Odoo (port 8069) n'est pas lancée, et le port 5432 n'est pas publié.
+#   docker compose -f docker-compose.odoo.yml -f docker-compose.odoo.prod.yml up -d postgres_odoo
+name: askyourdata-odoo
+
+services:
+  postgres_odoo:
+    ports: !reset []

@@ -1,0 +1,34 @@
+# AskYourData — proxy public (production). Certificat HTTPS obtenu et renouvelé automatiquement
+# (Let's Encrypt) pour SITE_DOMAIN : indispensable, le navigateur n'autorise le micro qu'en https.
+# Liste blanche : tout ce qui n'est pas listé répond 404 (index, import, export, annotations,
+# tableau de bord…). L'API applique la même liste de son côté (PUBLIC_MODE), par précaution.
+
+{$SITE_DOMAIN} {
+	encode gzip
+
+	header {
+		X-Robots-Tag "noindex, nofollow"
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+		Permissions-Policy "microphone=(self), camera=(), geolocation=()"
+		-Server
+	}
+
+	request_body {
+		max_size 2MB
+	}
+
+	@public {
+		path / /v2 /robots.txt /api/v1/ask /api/v1/transcribe /api/v1/access/me /api/v1/health /static/*
+		not path /static/admin.html
+	}
+
+	handle @public {
+		reverse_proxy api_service:5000
+	}
+
+	handle {
+		respond "Not found" 404
+	}
+}
