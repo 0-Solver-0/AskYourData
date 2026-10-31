@@ -636,3 +636,26 @@ def test_entity_attribute_one_link_away_is_found_and_reached_through_the_entity(
     found = names(plan)
     assert {"sale_order_line", "product_product", "product_template", "product_category"} <= set(found)
     assert "stock_warehouse_orderpoint" not in found and "stock_putaway_rule" not in found
+
+
+def test_always_included_key_brings_its_target_table_and_its_always_included_columns():
+    # Valeur du stock : stock_quant.location_id (toujours envoyée) → stock_location.usage (toujours envoyée),
+    # sans attendre que le modèle SQL demande « emplacements internes »
+    from tests.test_search import col
+    location = dict(col("location_id", label="Location", fk=True), always_include=True)
+    usage = dict(col("usage", "character varying", "Location Type"), always_include=True)
+    tables = {n: {"table_name": n, "odoo_label": n} for n in ("stock_quant", "stock_location", "product_product")}
+    cols = {"stock_quant": [col("id", pk=True), location, col("product_id", label="Product", fk=True),
+                            col("quantity", "numeric", "Quantity", odoo_type="float")],
+            "stock_location": [col("id", pk=True), col("name", "character varying", "Location Name"), usage,
+                               col("barcode", "character varying", "Barcode")],
+            "product_product": [col("id", pk=True)]}
+    rels = [{"from_table": a, "from_column": c, "to_table": b, "to_column": "id"} for a, c, b in (
+        ("stock_quant", "location_id", "stock_location"), ("stock_quant", "product_id", "product_product"))]
+    sq = structured.StructuredQuestion.from_dict({"subject": "stock on hand", "measures": ["quantity"]})
+    sims = {(t, c["column_name"]): [0.8 if c["column_name"] == "quantity" else 0.1]
+            for t, cs in cols.items() for c in cs}
+    plan = structured.plan_structured(sq, {"stock_quant": 0.7}, sims, tables, cols, rels, structured.StructuredParams())
+    assert names(plan)["stock_location"] == "always-key:stock_quant.location_id"
+    assert {"usage", "id"} <= columns(plan, "stock_location") and "barcode" not in columns(plan, "stock_location")
+    assert "FOREIGN KEY (location_id) REFERENCES stock_location(id)" in plan["schema_ddl"]
