@@ -127,3 +127,32 @@ def test_assumption_reaches_the_sql_model_and_the_answer():
     sent = c.transport.calls[1]["payload"]["messages"][1]["content"]
     assert "Reading chosen for the user (follow it): Sales orders, ranked by total amount." in sent
     assert sqlgen.build_user_message("q", {}, DDL).count("Reading chosen") == 0
+
+
+def test_rewritten_question_drives_the_search_and_the_sql_with_the_original_kept():
+    asked = "drink me me all opportunity with with their status"
+    prep_out = dict(PREP_OK, question="Show all opportunities with their stage.")
+    seen = []
+
+    def schema(account_id, question, structured):
+        seen.append(question)
+        return schema_ok(account_id, question, structured)
+
+    c = client((200, ok_body(text=json.dumps(prep_out)), ""), (200, ok_body(text="<sql>SELECT 1</sql>"), ""))
+    out = pipeline.translate(c, schema, asked, 1)
+    assert out["question"] == asked and out["rewritten"] == "Show all opportunities with their stage."
+    assert seen == ["Show all opportunities with their stage."]
+    sent = c.transport.calls[1]["payload"]["messages"][1]["content"]
+    assert sent.startswith("Question: Show all opportunities with their stage.")
+    assert f"As the user typed or said it (may contain speech-to-text errors): {asked}" in sent
+
+
+def test_rewrite_that_only_changes_punctuation_is_ignored():
+    assert pipeline.rewritten_question("top 5 customers", "Top 5 customers.") is None
+    assert pipeline.rewritten_question("top 5 customers", None) is None
+    assert pipeline.rewritten_question("top 5 costumers", "Top 5 customers.") == "Top 5 customers."
+    c = client((200, ok_body(text=json.dumps(dict(PREP_OK, question="Top 5 customers by revenue."))), ""),
+               (200, ok_body(text="<sql>SELECT 1</sql>"), ""))
+    out = pipeline.translate(c, schema_ok, "top 5 customers by revenue", 1)
+    assert out["rewritten"] is None
+    assert "As the user typed" not in c.transport.calls[1]["payload"]["messages"][1]["content"]
