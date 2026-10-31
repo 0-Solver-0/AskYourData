@@ -44,7 +44,7 @@
 
   <h2>Keys</h2>
   <div class="wrap"><table>
-    <thead><tr><th>Person</th><th>Key</th><th class="num">Used</th><th class="num">Cost $</th><th>Last use</th><th>State</th></tr></thead>
+    <thead><tr><th>Person</th><th>Group</th><th>Key</th><th class="num">Used</th><th class="num">Cost $</th><th>Last use</th><th>State</th></tr></thead>
     <tbody id="keys"></tbody>
   </table></div>
 
@@ -73,8 +73,9 @@
         const tr = document.createElement("tr");
         const name = td(k.name); const dot = document.createElement("span"); dot.className = "dot" + (k.active ? " on" : "");
         name.prepend(dot);
-        tr.append(name, td(`…${k.key_hint}`, "muted"), td(`${k.used} / ${k.quota}`, "num"),
-          td(Number(k.cost_usd).toFixed(4), "num"), td(when(k.last_used)), td(k.revoked ? "revoked" : "active"));
+        tr.append(name, td(k.grp), td(`…${k.key_hint}`, "muted"), td(`${k.used} / ${k.quota}`, "num"),
+          td(Number(k.cost_usd).toFixed(4), "num"), td(when(k.last_used)),
+          td(k.revoked ? "revoked" : k.disabled ? "disabled" : "active"));
         return tr;
       }));
       $("log").replaceChildren(...s.questions.map((q) => {

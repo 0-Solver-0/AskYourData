@@ -25,8 +25,10 @@ Routes publiques (tout le reste répond 404) : `/`, `/v2`, `/static/*`, `/robots
 La liste est appliquée deux fois : par Caddy (`deploy/Caddyfile`) et par l'API (`PUBLIC_MODE`).
 
 ## 2. Créer l'instance
-- Type **`m7i.large`** (2 vCPU, 8 Go) ; `m7i.xlarge` pour plus de marge. Pas de `t3`
-  (crédits CPU épuisés pendant les pics).
+- Type **`t3a.large`** (2 vCPU, 8 Go), crédits CPU en mode **Unlimited**. Rien n'est réindexé en
+  production : le CPU reste calme (DRAMA n'encode que la question), la mémoire est le vrai besoin
+  (environ 3 Go en marche, plus pendant la construction des images). Pas de 4 Go (`t3.medium`).
+  Pour un CPU constant sans crédits : `m7i.large`.
 - Ubuntu 24.04 LTS, disque **30 Go gp3**, une **Elastic IP**.
 - Groupe de sécurité :
   - 22 (SSH) : **ta seule adresse IP** ;
@@ -105,15 +107,19 @@ Ensuite :
 
 ## 8. Clés d'accès
 ```bash
-docker exec askyourdata_api python tools/keys.py create --name "Jury Meta" --quota 50
-docker exec askyourdata_api python tools/keys.py create --name "Karim (LinkedIn)"      # 20 questions
+docker exec askyourdata_api python tools/keys.py create --name "Jury Meta" --group jury --quota 50
+docker exec askyourdata_api python tools/keys.py create --name "Karim (LinkedIn)"      # groupe public, 20 questions
 docker exec askyourdata_api python tools/keys.py list
+docker exec askyourdata_api python tools/keys.py disable --group public                # seul le jury garde l'accès
+docker exec askyourdata_api python tools/keys.py enable  --group public                # on rouvre
 docker exec askyourdata_api python tools/keys.py quota  --name "Karim (LinkedIn)" --quota 30
 docker exec askyourdata_api python tools/keys.py revoke --name "Karim (LinkedIn)"
 docker exec askyourdata_api python tools/keys.py forget --name "Karim (LinkedIn)"      # efface ses questions
 docker exec askyourdata_api python tools/keys.py export > questions.json              # sans les noms
 ```
 La clé s'affiche **une seule fois**, à sa création : seule son empreinte est enregistrée.
+`disable` / `enable` coupent ou rouvrent un groupe entier (ou une clé avec `--name`) sans rien effacer :
+quota, questions et clé restent intacts. `revoke` est définitif.
 
 ## 9. Tableau de bord (tunnel SSH, jamais public)
 ```powershell

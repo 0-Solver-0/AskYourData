@@ -63,6 +63,9 @@ CREATE TABLE IF NOT EXISTS usage_log (
     audio_ms     INT,
     executed_sql TEXT
 );
+-- Groupes de clés (jury, public…) : un groupe entier se coupe et se rouvre sans rien effacer
+ALTER TABLE access_keys ADD COLUMN IF NOT EXISTS grp      VARCHAR(30) NOT NULL DEFAULT 'public';
+ALTER TABLE access_keys ADD COLUMN IF NOT EXISTS disabled BOOLEAN NOT NULL DEFAULT FALSE;
 CREATE INDEX IF NOT EXISTS idx_usage_log_key  ON usage_log(key_id);
 CREATE INDEX IF NOT EXISTS idx_usage_log_time ON usage_log(created_at);
 """
@@ -136,16 +139,18 @@ def ensure_schema(conn) -> None:
 
 # ── Gestion des clés (outil tools/keys.py) ───────────────────────────────────
 
-def create_key(conn, name: str, quota: int, expires_days: Optional[int] = None) -> tuple[str, int]:
+def create_key(conn, name: str, quota: int, expires_days: Optional[int] = None,
+               group: str = "public") -> tuple[str, int]:
     """Crée une clé ; renvoie (clé en clair, affichée une seule fois, id)."""
     ensure_schema(conn)
     key = new_key()
     with conn.cursor() as cur:
         cur.execute("""
-            INSERT INTO access_keys (name, key_hash, key_hint, quota, expires_at)
-            VALUES (%s, %s, %s, %s, CASE WHEN %s IS NULL THEN NULL ELSE NOW() + make_interval(days => %s) END)
+            INSERT INTO access_keys (name, key_hash, key_hint, quota, expires_at, grp)
+            VALUES (%s, %s, %s, %s, CASE WHEN %s IS NULL THEN NULL ELSE NOW() + make_interval(days => %s) END, %s)
             RETURNING id
-        """, (name.strip(), hash_key(key), key[-4:], int(quota), expires_days, expires_days or 0))
+        """, (name.strip(), hash_key(key), key[-4:], int(quota), expires_days, expires_days or 0,
+              (group or "public").strip().lower()))
         key_id = cur.fetchone()[0]
     conn.commit()
     return key, key_id
@@ -155,8 +160,8 @@ def list_keys(conn) -> list[dict]:
     ensure_schema(conn)
     with conn.cursor() as cur:
         cur.execute("""
-            SELECT id, name, key_hint, quota, used, cost_usd, revoked, expires_at, created_at, last_used
-            FROM access_keys ORDER BY id
+            SELECT id, name, grp, key_hint, quota, used, cost_usd, revoked, disabled, expires_at, created_at, last_used
+            FROM access_keys ORDER BY grp, id
         """)
         cols = [d[0] for d in cur.description]
         return [dict(zip(cols, r)) for r in cur.fetchall()]
@@ -166,6 +171,21 @@ def revoke_key(conn, name: str) -> int:
     ensure_schema(conn)
     with conn.cursor() as cur:
         cur.execute("UPDATE access_keys SET revoked = TRUE WHERE name = %s", (name,))
+        n = cur.rowcount
+    conn.commit()
+    return n
+
+
+def set_disabled(conn, disabled: bool, *, group: Optional[str] = None, name: Optional[str] = None) -> int:
+    """Coupe (ou rouvre) toutes les clés d'un groupe, ou une clé par son nom. Rien n'est effacé."""
+    ensure_schema(conn)
+    if not group and not name:
+        raise ValueError("préciser un groupe ou un nom")
+    with conn.cursor() as cur:
+        if group:
+            cur.execute("UPDATE access_keys SET disabled = %s WHERE grp = %s", (disabled, group.strip().lower()))
+        else:
+            cur.execute("UPDATE access_keys SET disabled = %s WHERE name = %s", (disabled, name))
         n = cur.rowcount
     conn.commit()
     return n
@@ -237,7 +257,8 @@ def global_spent(conn) -> float:
 def find_key(conn, key: str) -> Optional[dict]:
     with conn.cursor() as cur:
         cur.execute("""
-            SELECT id, name, quota, used, revoked, (expires_at IS NOT NULL AND expires_at < NOW()) AS expired,
+            SELECT id, name, grp, quota, used, revoked, disabled,
+                   (expires_at IS NOT NULL AND expires_at < NOW()) AS expired,
                    EXTRACT(EPOCH FROM (NOW() - last_used)) AS idle_s
             FROM access_keys WHERE key_hash = %s
         """, (hash_key(key),))
@@ -256,7 +277,7 @@ def check_key(conn, key: Optional[str], ip: str, guard: Guard, settings: Setting
     if not found:
         guard.failed(ip)
         raise AccessError(401, "invalid_key", "This access key is not valid.")
-    if found["revoked"] or found["expired"]:
+    if found["revoked"] or found["expired"] or found["disabled"]:
         raise AccessError(403, "revoked", "This access key is no longer active.")
     if global_spent(conn) >= settings.global_budget_usd:
         raise AccessError(503, "budget", "The public test has reached its budget. Thank you for trying AskYourData!")
@@ -326,9 +347,9 @@ def stats(conn, settings: Settings, recent: int = 200) -> dict:
     ensure_schema(conn)
     with conn.cursor() as cur:
         cur.execute("""
-            SELECT k.id, k.name, k.key_hint, k.quota, k.used, k.cost_usd, k.revoked, k.last_used,
+            SELECT k.id, k.name, k.grp, k.key_hint, k.quota, k.used, k.cost_usd, k.revoked, k.disabled, k.last_used,
                    (k.last_used IS NOT NULL AND k.last_used > NOW() - make_interval(secs => %s)) AS active
-            FROM access_keys k ORDER BY k.last_used DESC NULLS LAST, k.id
+            FROM access_keys k ORDER BY k.grp, k.last_used DESC NULLS LAST, k.id
         """, (ACTIVE_WINDOW_S,))
         cols = [d[0] for d in cur.description]
         keys = [dict(zip(cols, r)) for r in cur.fetchall()]

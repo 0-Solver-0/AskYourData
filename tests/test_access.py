@@ -154,3 +154,27 @@ def test_public_mode_routes(db, monkeypatch):
     # En direct sur le serveur (tunnel SSH) : le tableau de bord répond
     stats = client.get("/api/v1/admin/stats")
     assert stats.status_code == 200 and stats.json["totals"]["questions"] == 1
+
+
+@needs_pg
+def test_a_whole_group_is_disabled_then_enabled_without_losing_anything(db):
+    conn, _ = db
+    settings = access.Settings(public=True, default_quota=20, global_budget_usd=20, min_interval_s=0)
+    guard = access.Guard()
+    jury, _ = access.create_key(conn, "Jury Meta", 50, group="jury")
+    karim, _ = access.create_key(conn, "Karim (LinkedIn)", 20)
+    access.reserve_question(conn, access.check_key(conn, karim, "1.1.1.1", guard, settings), settings)
+
+    assert access.set_disabled(conn, True, group="public") == 1
+    access.check_key(conn, jury, "1.1.1.1", guard, settings)                     # le jury garde l'accès
+    with pytest.raises(access.AccessError) as exc:
+        access.check_key(conn, karim, "1.1.1.1", guard, settings)
+    assert exc.value.code == "revoked"
+    assert {k["name"]: (k["grp"], k["disabled"]) for k in access.list_keys(conn)} == \
+        {"Jury Meta": ("jury", False), "Karim (LinkedIn)": ("public", True)}
+
+    assert access.set_disabled(conn, False, group="public") == 1
+    again = access.check_key(conn, karim, "1.1.1.1", guard, settings)
+    assert again["used"] == 1                                                    # rien n'a été effacé
+    with pytest.raises(ValueError):
+        access.set_disabled(conn, True)
