@@ -155,21 +155,25 @@ def _label_and_synonyms(label: str, synonyms: list[str]) -> list[VectorText]:
 def table_vector_texts(table: dict, columns: list[dict], relation_labels: Iterable[str] = ()) -> list[VectorText]:
     """
     Textes encodés pour une table. Enrichie (libellé ou synonymes) : le libellé métier, puis un
-    texte par synonyme. Sinon : la fiche complète (libellé Odoo, nom, colonnes parlantes).
+    texte par synonyme. Sinon : la fiche complète (libellé Odoo, nom, colonnes parlantes), sans description.
     """
     label = _clean(table.get("label"))
     synonyms = split_synonyms(table.get("synonyms"))
     if label or synonyms:
         return _label_and_synonyms(label, synonyms)
-    return [("card", build_table_text(table, columns, relation_labels))]
+    # La description n'est jamais encodée (DDL seulement), même dans la fiche de secours
+    return [("card", build_table_text({**table, "description": None}, columns, relation_labels))]
 
 
 def column_vector_texts(col: dict) -> list[VectorText]:
     """
     Textes encodés pour une colonne. Enrichie (libellé ou synonymes) : son libellé (manuel, sinon
-    Odoo, sinon le nom lisible), puis un texte par synonyme. Sinon : la fiche complète.
+    Odoo, sinon le nom lisible), puis un texte par synonyme. Sinon : la fiche complète, sans les notes
+    (libellé et aide Odoo, valeurs).
     """
     synonyms = split_synonyms(col.get("synonyms"))
     if _clean(col.get("label")) or synonyms:
         return _label_and_synonyms(column_display_label(col), synonyms)
-    return [("card", build_column_text(col))]
+    # Les notes ne sont jamais encodées (DDL seulement), même dans la fiche de secours : une note
+    # « not a journal » attirait la recherche « payment journal »
+    return [("card", build_column_text({**col, "notes": None}))]

@@ -84,7 +84,19 @@ def test_enriched_table_is_encoded_as_label_and_each_synonym():
 def test_table_without_label_or_synonyms_keeps_the_full_card():
     from schema_service.text_builders import build_table_text, table_vector_texts
     table = {"table_name": "stock_quant", "odoo_label": "Quants", "description": "Stock on hand."}
-    assert table_vector_texts(table, []) == [("card", build_table_text(table, []))]
+    texts = table_vector_texts(table, [])
+    assert texts == [("card", build_table_text({**table, "description": None}, []))]
+    assert "Stock on hand" not in texts[0][1]                     # description jamais encodée
+
+
+def test_column_with_only_a_note_keeps_its_note_out_of_the_vector():
+    from schema_service.text_builders import column_vector_texts
+    col = {"column_name": "payment_reference", "odoo_label": "Payment Reference",
+           "odoo_help": "The payment reference to set on journal items.",
+           "notes": "Communication text for the payment; not a journal and not an amount."}
+    (source, text), = column_vector_texts(col)
+    assert source == "card" and "Payment Reference" in text and "journal items" in text
+    assert "not a journal" not in text
 
 
 def test_enriched_column_leaves_notes_and_help_out_of_the_vectors():
