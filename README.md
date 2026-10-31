@@ -318,6 +318,10 @@ Ouvrir **http://localhost:5000/** : zone de question, exemples, réponse en tabl
 
 **Voix** : bouton micro (cliquer pour parler, recliquer pour envoyer). Le navigateur convertit l'enregistrement en WAV mono 16 kHz, `POST /api/v1/transcribe` le transmet à **Muse Voice Transcribe** (`muse-voice-transcribe-1.0`, API Meta, même clé `META_API_KEY`), le texte entendu s'affiche puis part automatiquement dans la même chaîne qu'une question écrite. Réglages dans `.env` (obligatoires, sans valeur cachée dans le code) : `VOICE_PROVIDER=meta_voice` (profil de `config/llm_providers.yaml` : modèle, adresse, prix) et `VOICE_LANGUAGES=English,French`. Le micro demande une page ouverte en `localhost` ou en https.
 
+**Version conversation (proposition) : http://localhost:5000/v2**. Même API, autre présentation : une page d'accueil centrée (salutation, saisie en pilule, exemples), puis un fil de questions et réponses avec la saisie fixée en bas. Elle s'adapte au téléphone. La version classique reste sur `/`.
+- **Réponse lue à voix haute** par la **synthèse vocale du navigateur** (`speechSynthesis`, voix du système, aucun modèle tiers). Le texte lu est le résumé de la base, précédé de l'hypothèse retenue s'il y en a une ; sans réponse, la page lit ce qui manque (« This data is not in the database. Data not available: … »). Aucun chiffre n'est écrit par un modèle.
+- Lecture **automatique** pour une question dictée, ou pour toutes si le bouton haut-parleur de la saisie est activé (choix gardé dans le navigateur). Bouton **Listen** sous chaque réponse.
+
 **Taux de bonnes réponses** : [`benchmark/unseen_reference.yaml`](benchmark/unseen_reference.yaml) donne, pour chaque question, un SQL de référence écrit à la main et le choix métier retenu. [`benchmark/answer_eval.py`](benchmark/answer_eval.py) exécute la référence (même rôle en lecture seule), pose la question à `/api/v1/ask` et compare les valeurs : mêmes lignes, colonnes en plus permises, nombres arrondis à 2 décimales, ordre compté pour les classements.
 
 ```powershell

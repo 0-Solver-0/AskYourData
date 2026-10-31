@@ -9,6 +9,7 @@ Pipeline actuel :
 
 Endpoints :
   GET  /                   — interface web (api_service/static)
+  GET  /v2                 — interface web, version conversation (api_service/static/v2)
   POST /api/v1/transcribe  — question dictée (WAV) → texte (Muse Voice Transcribe)
   POST /api/v1/ask         — question → découpage → schéma → SQL → vérification → exécution → réponse
   POST /api/v1/translate   — question → découpage → schéma → SQL (sans exécution)
@@ -403,6 +404,12 @@ def translate():
 def home():
     """Interface web : question écrite ou dictée → réponse."""
     return send_from_directory(STATIC_DIR, "index.html")
+
+
+@app.get("/v2")
+def home_v2():
+    """Interface web, version conversation (proposition) : même API, réponse lue à voix haute."""
+    return send_from_directory(os.path.join(STATIC_DIR, "v2"), "index.html")
 
 
 @app.post("/api/v1/transcribe")
