@@ -176,7 +176,10 @@ def health():
         # Public : seulement ce dont l'interface a besoin (limites du micro, noms des modèles)
         llm = llm_status()
         models = {r: (llm.get(r) or {}).get("primary", {}).get("model") for r in ("prep", "sql")}
-        rec = (voice.voice_status() or {}).get("recording")
+        vstat = voice.voice_status() or {}
+        models["transcribe"] = vstat.get("model")
+        models["embedder"] = ((statuses.get("schema") or {}).get("embedder") or {}).get("model")
+        rec = vstat.get("recording")
         return jsonify({"api": "ok", "ready": all_ok, "public": True, "models": models,
                         "voice": {"recording": rec} if rec else {}})
     return jsonify({

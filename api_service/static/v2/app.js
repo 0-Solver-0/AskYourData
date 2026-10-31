@@ -93,10 +93,15 @@
     const db = h.execution && h.execution.db;
     const prep = (h.models && h.models.prep) || (h.llm && h.llm.prep && h.llm.prep.primary && h.llm.prep.primary.model);
     const sql = (h.models && h.models.sql) || (h.llm && h.llm.sql && h.llm.sql.primary && h.llm.sql.primary.model);
+    const transcribe = (h.models && h.models.transcribe) || (h.voice && h.voice.model);
+    const embedder = (h.models && h.models.embedder) ||
+      (h.services && h.services.schema && h.services.schema.embedder && h.services.schema.embedder.model);
     if (h.public) $("#classic-link").hidden = true;      // test public : une seule interface
     const parts = [];
     if (db) parts.push(el("span", {}, "Odoo ", el("strong", { text: db })));
-    if (prep && sql) parts.push(el("span", {}, parts.length ? " · " : "", el("strong", { text: short(prep) }), " + ", el("strong", { text: short(sql) })));
+    // Les modèles Meta de la chaîne : compréhension, SQL, voix, recherche des tables
+    const models = [prep, sql, transcribe, embedder].filter(Boolean).map(short);
+    models.forEach((m, i) => parts.push(el("span", {}, parts.length ? (i ? " + " : " · ") : "", el("strong", { text: m }))));
     $("#source").replaceChildren(...(parts.length ? parts : [document.createTextNode("Database not reachable")]));
   }).catch(() => { $("#source").textContent = "Service not reachable"; });
 
@@ -128,6 +133,7 @@
     let resp, info;
     try {
       resp = await fetch("/api/v1/access/me", { headers: withKey() });
+      if (resp.status === 404) return true;               // API sans gestion des clés : rien à demander
       info = await resp.json();
     } catch {
       needKey("The service is not reachable. Please try again later.");

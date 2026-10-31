@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <title>AskYourData</title>
+  <title>AYDA — Ask your data</title>
   <meta name="description" content="Ask a business question about your Odoo data, typed or spoken, and hear the answer straight from the database.">
   <meta name="theme-color" content="#fcfaf7">
   <meta name="robots" content="noindex, nofollow">
@@ -14,7 +14,7 @@
 </head>
 <body class="is-empty">
   <header class="top">
-    <a class="wordmark" href="/v2">Ask<span>Your</span>Data</a>
+    <a class="wordmark" href="/" title="AYDA — Ask Your DAta">A<span>Y</span>DA</a>
     <div class="top-right">
       <span class="source" id="source" aria-live="polite">Connecting…</span>
       <span class="remaining" id="remaining" hidden></span>
@@ -33,14 +33,14 @@
 
   <footer class="dock">
     <form id="key-gate" class="key-gate" autocomplete="off" hidden>
-      <label for="access-key">Enter your access key to try AskYourData</label>
+      <label for="access-key">Enter your access key to try AYDA</label>
       <div class="key-row">
         <input id="access-key" type="password" inputmode="text" spellcheck="false" autocomplete="off"
           placeholder="ayd_…" maxlength="80" required>
         <button type="submit" class="key-go">Start</button>
       </div>
       <p class="key-state" id="key-state" aria-live="polite"></p>
-      <p class="key-privacy">Your questions are stored to improve AskYourData. Do not include personal or confidential information. Each key allows a limited number of questions, typed or spoken.</p>
+      <p class="key-privacy">Your questions are stored to improve AYDA. Do not include personal or confidential information. Each key allows a limited number of questions, typed or spoken.</p>
     </form>
     <form id="ask-form" class="composer" autocomplete="off">
       <button type="button" id="more" class="icon-btn" aria-expanded="false" aria-controls="examples" title="Example questions">
@@ -70,7 +70,7 @@
       <button type="button">Leads created this month by source</button>
       <button type="button">Employees by job position and manager</button>
     </div>
-    <p class="fineprint">Answers come only from your database. When the data is not there, AskYourData says what is missing.</p>
+    <p class="fineprint">Answers come only from your database. When the data is not there, AYDA says what is missing.</p>
   </footer>
 
   <template id="turn-template">
