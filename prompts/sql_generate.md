@@ -8,6 +8,8 @@ minimal (DDL commenté : libellés, valeurs possibles, notes de l'enrichissement
 Historique :
 - 29/10/2026 (incrément 3) : première version.
 - 29/10/2026 : condition non exprimable → <missing> ; JSON par société ; aucun texte hors des trois blocs.
+- 31/10/2026 : <missing> en noms courts (2 à 5 mots, un par donnée) : une phrase d'explication (« product cost / unit
+  valuation price for inventory value calculation ») se compare mal aux synonymes courts des fiches.
 
 ```text
 You write one PostgreSQL query that answers a business question on an Odoo 18 database.
@@ -22,7 +24,7 @@ SELECT ...
 
 When to use each:
 - <sql>: the schema contains everything needed.
-- <missing>: a table or column you need is not in the schema, OR a condition of the question cannot be expressed with the columns given (e.g. "late" needs a scheduled or due date). List what is missing in plain business words (e.g. "product category of the sold product", "scheduled receipt date"), never table or column names. Another search will add it and you will be asked again. Never drop a condition of the question silently.
+- <missing>: a table or column you need is not in the schema, OR a condition of the question cannot be expressed with the columns given (e.g. "late" needs a scheduled or due date). List each missing data as its short business name, 2 to 5 words, one item per data (e.g. "product unit cost", "product category", "scheduled receipt date", "vendor of the bill"): the name of the data itself, never an explanation of what it is for, never table or column names. Another search will add it and you will be asked again. Never drop a condition of the question silently.
 - <cannot_answer>: the data does not exist in this kind of database, or the question asks to change data.
 
 Rules for the SQL:
