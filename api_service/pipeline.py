@@ -14,6 +14,7 @@ ask : translate, puis vérification (api_service/validate.py) → exécution en 
 from __future__ import annotations
 
 import os
+import re
 import time
 from typing import Callable, Optional
 
@@ -74,8 +75,8 @@ def translate(client: LLMClient, schema_fn: SchemaFn, question: str, account_id:
     reasoning = reasoning or {}
     t0 = time.time()
     timings: dict[str, int] = {}
-    out: dict = {"question": question, "status": None, "structured_request": None, "prep_status": None,
-                 "assumption": None,
+    out: dict = {"question": question, "rewritten": None, "status": None, "structured_request": None,
+                 "prep_status": None, "assumption": None,
                  "sql": None, "missing": [], "reason": None, "tables_used": [], "schema_ddl": None,
                  "token_estimate": None, "models": {}, "usage": {}, "timings_ms": timings}
 
@@ -88,16 +89,20 @@ def translate(client: LLMClient, schema_fn: SchemaFn, question: str, account_id:
         timings["structuring"] = int((time.time() - t) * 1000)
         out["structured_request"], out["prep_status"] = prep["structured"], prep["status"]
         out["assumption"] = prep.get("assumption")
+        out["rewritten"] = rewritten_question(question, prep.get("question"))
         out["usage"]["prep"] = _usage(prep.get("llm"))
         out["models"]["prep"] = out["usage"]["prep"]["model"]
         if prep["status"] in REFUSALS:
             out["status"], out["reason"] = REFUSALS[prep["status"]], prep.get("reason")
             return _finish(out, t0)
 
+    # La suite travaille sur la question reformulée par PREP (l'originale reste transmise au modèle SQL)
+    wq = out["rewritten"] or question
+
     # 2. Recherche de schéma
     t = time.time()
     try:
-        schema = schema_fn(account_id, question, out["structured_request"])
+        schema = schema_fn(account_id, wq, out["structured_request"])
     except Exception as exc:  # noqa: BLE001
         out["status"], out["reason"] = "error", f"recherche de schéma impossible : {exc}"
         return _finish(out, t0)
@@ -114,7 +119,7 @@ def translate(client: LLMClient, schema_fn: SchemaFn, question: str, account_id:
     forced = None
     if should_judge(ranking, judge_gap() if gap is None else gap):
         t = time.time()
-        verdict = pick_subject(client, question, out["structured_request"], ranking,
+        verdict = pick_subject(client, wq, out["structured_request"], ranking,
                                reasoning=reasoning.get("prep"))
         timings["judge"] = int((time.time() - t) * 1000)
         if verdict.get("llm") and "provider" in verdict["llm"]:
@@ -127,7 +132,7 @@ def translate(client: LLMClient, schema_fn: SchemaFn, question: str, account_id:
             forced = verdict["subject"]
             t = time.time()
             try:
-                again = schema_fn(account_id, question, out["structured_request"], subject=forced)
+                again = schema_fn(account_id, wq, out["structured_request"], subject=forced)
             except Exception as exc:  # noqa: BLE001
                 again = {"error": str(exc)}
             timings["schema_2"] = int((time.time() - t) * 1000)
@@ -152,8 +157,8 @@ def translate(client: LLMClient, schema_fn: SchemaFn, question: str, account_id:
     asked = gen["missing"]
     t = time.time()
     try:
-        extended = (extend_fn(account_id, question, out["structured_request"], asked, subject=forced) if forced
-                    else extend_fn(account_id, question, out["structured_request"], asked))
+        extended = (extend_fn(account_id, wq, out["structured_request"], asked, subject=forced) if forced
+                    else extend_fn(account_id, wq, out["structured_request"], asked))
     except Exception as exc:  # noqa: BLE001
         extended = {"error": str(exc)}
     timings["extend"] = int((time.time() - t) * 1000)
@@ -234,8 +239,10 @@ def _generate(client: LLMClient, question: str, out: dict, schema: dict, reasoni
               previous: Optional[dict], kind: str = "generation") -> dict:
     """Un essai de génération : met à jour `out` (statut, SQL, schéma de cet essai, usage, essais)."""
     t = time.time()
-    gen = generate_sql(client, question, out["structured_request"], schema["schema_ddl"],
-                       previous=previous, reasoning=reasoning.get("sql"), assumption=out.get("assumption"))
+    rewritten = out.get("rewritten")
+    gen = generate_sql(client, rewritten or question, out["structured_request"], schema["schema_ddl"],
+                       previous=previous, reasoning=reasoning.get("sql"), assumption=out.get("assumption"),
+                       original=question if rewritten else None)
     elapsed = int((time.time() - t) * 1000)
     key = "generation" if not out["attempts"] else f"generation_{len(out['attempts']) + 1}"
     out["timings_ms"][key] = elapsed
@@ -253,6 +260,14 @@ def _generate(client: LLMClient, question: str, out: dict, schema: dict, reasoni
     if gen.get("raw"):
         out["raw"] = gen["raw"]
     return gen
+
+
+def rewritten_question(asked: str, rewritten: Optional[str]) -> Optional[str]:
+    """Question reformulée par PREP, ou None si elle est vide ou ne change que la ponctuation et la casse."""
+    if not rewritten:
+        return None
+    norm = lambda t: " ".join(re.findall(r"[a-z0-9]+", t.lower()))  # noqa: E731
+    return None if norm(rewritten) == norm(asked) else rewritten
 
 
 def _finish(out: dict, t0: float) -> dict:

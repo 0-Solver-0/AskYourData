@@ -54,13 +54,41 @@ def voice_config(env: Optional[dict] = None, profiles_path: Optional[str] = None
             "api_key_set": bool(env.get(raw["api_key_env"]))}
 
 
+# Limites de l'enregistrement au micro (lues par l'interface via /health), réglées dans .env :
+#   VOICE_MAX_SECONDS  durée maximale d'une question dictée (arrêt et envoi)
+#   VOICE_SILENCE_MS   silence après la parole qui arrête et envoie
+#   VOICE_NO_SPEECH_MS aucun son au début : arrêt sans envoi (rien n'est facturé)
+# Valeur absente ou invalide : valeur de secours, signalée dans /health (« defaults »).
+RECORDING_LIMITS = {"max_seconds": ("VOICE_MAX_SECONDS", 20, 3, 120),
+                    "silence_ms": ("VOICE_SILENCE_MS", 2000, 500, 10000),
+                    "no_speech_ms": ("VOICE_NO_SPEECH_MS", 5000, 1000, 30000)}
+
+
+def recording_limits(env: Optional[dict] = None) -> dict:
+    """{"max_seconds", "silence_ms", "no_speech_ms", "defaults": [variables absentes ou invalides]}."""
+    env = env if env is not None else os.environ
+    out: dict = {"defaults": []}
+    for key, (var, fallback, low, high) in RECORDING_LIMITS.items():
+        try:
+            value = int(str(env.get(var, "")).strip())
+            if not low <= value <= high:
+                raise ValueError
+        except ValueError:
+            value = fallback
+            out["defaults"].append(var)
+        out[key] = value
+    return out
+
+
 def voice_status(env: Optional[dict] = None) -> dict:
     """Pour /health : configuration sans secret, ou l'erreur de configuration."""
     try:
         cfg = voice_config(env)
     except VoiceError as exc:
         return {"error": str(exc)}
-    return {k: cfg[k] for k in ("profile", "model", "languages", "api_key_set")}
+    status = {k: cfg[k] for k in ("profile", "model", "languages", "api_key_set")}
+    status["recording"] = recording_limits(env)
+    return status
 
 
 def transcribe(wav: bytes, env: Optional[dict] = None, post=requests.post) -> dict:

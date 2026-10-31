@@ -4,7 +4,6 @@
   "use strict";
 
   const ACCOUNT_ID = 1;
-  const MAX_RECORDING_MS = 60000;
 
   const $ = (sel, root = document) => root.querySelector(sel);
   const form = $("#ask-form");
@@ -144,6 +143,9 @@
   function render(card, data, voice) {
     const body = $(".answer-body", card);
     body.replaceChildren();
+    if (data.rewritten) {
+      body.append(el("p", { class: "understood" }, el("strong", { text: "Understood as: " }), data.rewritten));
+    }
     if (data.assumption) {
       body.append(el("p", { class: "assumption" }, el("strong", { text: "Assumed: " }), data.assumption));
     }
@@ -263,9 +265,8 @@
   // ── Question dictée ─────────────────────────────────────────────────────────
   let recorder = null;
   let chunks = [];
-  let stopTimer = null;
-  let recordStart = 0;
-  let tick = null;
+  let guard = null;
+  let discard = false;
 
   function showVoice(text, isError = false) {
     voiceState.hidden = !text;
@@ -273,7 +274,7 @@
     voiceState.classList.toggle("error", isError);
   }
 
-  micBtn.addEventListener("click", () => (recorder ? stopRecording() : startRecording()));
+  micBtn.addEventListener("click", () => (recorder ? stopRecording(false) : startRecording()));
 
   async function startRecording() {
     if (busy) return;
@@ -293,18 +294,23 @@
     recorder.ondataavailable = (e) => e.data.size && chunks.push(e.data);
     recorder.onstop = () => { stream.getTracks().forEach((t) => t.stop()); handleRecording(); };
     recorder.start();
-    recordStart = performance.now();
     micBtn.setAttribute("aria-pressed", "true");
     $("#mic-label").textContent = "Stop and ask";
     sendBtn.disabled = true;
-    tick = setInterval(() => showVoice(`Listening ${fmtMs(performance.now() - recordStart)}. Click the microphone again when you are done.`), 200);
-    stopTimer = setTimeout(stopRecording, MAX_RECORDING_MS);
+    discard = false;
+    // Arrêt automatique : silence après la parole, durée maximale, ou aucun son (sans envoi) — limites de .env
+    guard = window.AYDVoiceGuard.watch(stream, {
+      onTick: (ms, lim, heard) => showVoice(heard
+        ? `Listening ${fmtMs(ms)} · sends after ${lim.silence_ms / 1000} s of silence (max ${lim.max_seconds} s)`
+        : `Listening ${fmtMs(ms)} · speak now`),
+      onStop: (reason) => stopRecording(reason === "no_speech"),
+    });
   }
 
-  function stopRecording() {
+  function stopRecording(cancel = false) {
     if (!recorder) return;
-    clearTimeout(stopTimer);
-    clearInterval(tick);
+    if (guard) { guard.stop(); guard = null; }
+    discard = cancel === true;
     micBtn.setAttribute("aria-pressed", "false");
     $("#mic-label").textContent = "Start speaking";
     const r = recorder;
@@ -313,6 +319,10 @@
   }
 
   async function handleRecording() {
+    if (discard) {
+      showVoice("Nothing was heard, so nothing was sent. Tap the microphone and speak.", true);
+      return;
+    }
     setBusy(true);
     showVoice("Turning your voice into text");
     let result;

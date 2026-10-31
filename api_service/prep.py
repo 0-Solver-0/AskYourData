@@ -8,6 +8,7 @@ Rôle PREP : découpage d'une question en morceaux de recherche (voir prompts/pr
     result["structured"]  → {"subject", "measures", "filters", "group_by", "period", "order", "entities"}
                             (format attendu par POST /select/structured de schema_service)
     result["assumption"]  → lecture par défaut choisie et annoncée à l'utilisateur, ou None
+    result["question"]    → la question reformulée (correcte et claire, rien d'ajouté), ou None
 
 Le modèle ne voit que la question, jamais le schéma : il ne peut pas inventer de table.
 Si l'appel échoue (fournisseur et secours indisponibles, réponse illisible), le statut est
@@ -79,8 +80,8 @@ def normalize(raw: Any) -> dict:
 
     if status == "ok" and not structured["subject"]:
         raise ValueError("statut ok sans sujet")
-    return {"status": status, "reason": reason, "assumption": assumption, "structured": structured,
-            "warnings": warnings}
+    return {"status": status, "reason": reason, "assumption": assumption, "question": _clean(raw.get("question")),
+            "structured": structured, "warnings": warnings}
 
 
 def _entities(value: Any, structured: dict, warnings: list[str]) -> dict[str, str]:
@@ -109,7 +110,7 @@ def _entities(value: Any, structured: dict, warnings: list[str]) -> dict[str, st
 
 def degraded(question: str, error: str) -> dict:
     """Repli sans découpage : la question entière sert de sujet."""
-    return {"status": "degraded", "reason": error, "assumption": None, "warnings": [],
+    return {"status": "degraded", "reason": error, "assumption": None, "question": None, "warnings": [],
             "structured": {"subject": question, "measures": [], "filters": [], "group_by": [],
                            "period": None, "order": None, "entities": {}}}
 

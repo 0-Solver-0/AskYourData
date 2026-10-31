@@ -159,6 +159,9 @@ services:
       # Question dictée (profil dans config/llm_providers.yaml, clé META_API_KEY)
       VOICE_PROVIDER:      ${VOICE_PROVIDER:-}
       VOICE_LANGUAGES:     ${VOICE_LANGUAGES:-}
+      VOICE_MAX_SECONDS:   ${VOICE_MAX_SECONDS:-}
+      VOICE_SILENCE_MS:    ${VOICE_SILENCE_MS:-}
+      VOICE_NO_SPEECH_MS:  ${VOICE_NO_SPEECH_MS:-}
       # Exécution en lecture seule sur la base source (rôle créé par tools/create_readonly_role.py)
       SOURCE_DB_HOST:      ${SOURCE_DB_HOST:-postgres_odoo}
       SOURCE_DB_PORT:      ${SOURCE_DB_PORT:-5432}

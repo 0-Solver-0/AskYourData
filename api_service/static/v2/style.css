@@ -147,6 +147,8 @@ body:not(.is-empty) .welcome { display: none; }
   animation: spin 1.2s linear infinite;
 }
 
+.understood { margin: 0; font-size: 15px; color: var(--muted); }
+.understood strong { color: var(--ink); font-weight: 600; }
 .assumption {
   margin: 0; justify-self: start; padding: 6px 12px; font-size: 14px;
   background: var(--warn-bg); border-radius: var(--radius-sm);

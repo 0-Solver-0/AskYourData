@@ -5,7 +5,6 @@
   "use strict";
 
   const ACCOUNT_ID = 1;
-  const MAX_RECORDING_MS = 60000;
   const SPEAK_KEY = "askyourdata.speak";
 
   const $ = (sel, root = document) => root.querySelector(sel);
@@ -111,14 +110,16 @@
   }
 
   // Ce qui est lu : le résumé de la base (avec l'hypothèse retenue), ou ce qui manque pour répondre
-  function speechText(data) {
+  function speechText(data, voice) {
+    // Question dictée : on redit d'abord ce qui a été compris, pour que l'erreur s'entende tout de suite
+    const heard = voice && data.rewritten ? `Understood: ${data.rewritten} ` : "";
     if (data.status === "ok" && data.answer) {
-      return (data.assumption ? `Assuming: ${data.assumption} ` : "") + data.answer.summary;
+      return heard + (data.assumption ? `Assuming: ${data.assumption} ` : "") + data.answer.summary;
     }
     const title = STATUS_TEXT[data.status] || "No answer";
     const notSaid = (data.missing || []).filter((m) => !(data.reason || "").includes(m));
     const missing = notSaid.length ? ` Missing: ${notSaid.join(", ")}.` : "";
-    return `${title}. ${data.reason || "I could not build a query I can trust, so I give no figure."}${missing}`;
+    return `${heard}${title}. ${data.reason || "I could not build a query I can trust, so I give no figure."}${missing}`;
   }
 
   function setListenButton(btn, on) {
@@ -236,13 +237,16 @@
     const listen = render(turn, data, voice);
     $(".reply", turn).scrollIntoView({ behavior: "smooth", block: "start" });
     // Lu automatiquement si la question a été dictée, ou si la lecture est activée
-    if (listen && (voice || autoSpeak())) speak(speechText(data), listen);
+    if (listen && (voice || autoSpeak())) speak(speechText(data, voice), listen);
     if (!matchMedia("(pointer: coarse)").matches) input.focus();
   }
 
   function render(turn, data, voice) {
     const body = $(".reply-body", turn);
     body.replaceChildren();
+    if (data.rewritten) {
+      body.append(el("p", { class: "understood" }, el("strong", { text: "Understood as: " }), data.rewritten));
+    }
     if (data.assumption) {
       body.append(el("p", { class: "assumption" }, el("strong", { text: "Assumed: " }), data.assumption));
     }
@@ -257,7 +261,7 @@
       if (notSaid.length) notice.append(el("ul", {}, ...notSaid.map((m) => el("li", { text: m }))));
       body.append(notice);
     }
-    const listen = renderTools(turn, data);
+    const listen = renderTools(turn, data, voice);
     renderTrace(turn, data, voice);
     renderHow(turn, data);
     return listen;
@@ -275,14 +279,14 @@
     return el("div", { class: "table-wrap", tabindex: "0" }, el("table", {}, thead, el("tbody", {}, ...rows)));
   }
 
-  function renderTools(turn, data) {
+  function renderTools(turn, data, voice) {
     const tools = $(".reply-tools", turn);
     const items = [];
     let listen = null;
     if (tts) {
       listen = el("button", { type: "button", class: "chip", "aria-pressed": "false" });
       setListenButton(listen, false);
-      listen.addEventListener("click", () => (speaking === listen ? stopSpeaking() : speak(speechText(data), listen)));
+      listen.addEventListener("click", () => (speaking === listen ? stopSpeaking() : speak(speechText(data, voice), listen)));
       items.push(listen);
     }
     const answer = data.status === "ok" && data.answer;
@@ -376,9 +380,8 @@
   // ── Question dictée ─────────────────────────────────────────────────────────
   let recorder = null;
   let chunks = [];
-  let stopTimer = null;
-  let recordStart = 0;
-  let tick = null;
+  let guard = null;
+  let discard = false;
 
   function showVoice(text, isError = false) {
     voiceState.hidden = !text;
@@ -386,7 +389,7 @@
     voiceState.classList.toggle("error", isError);
   }
 
-  micBtn.addEventListener("click", () => (recorder ? stopRecording() : startRecording()));
+  micBtn.addEventListener("click", () => (recorder ? stopRecording(false) : startRecording()));
 
   async function startRecording() {
     if (busy) return;
@@ -407,18 +410,23 @@
     recorder.ondataavailable = (e) => e.data.size && chunks.push(e.data);
     recorder.onstop = () => { stream.getTracks().forEach((t) => t.stop()); handleRecording(); };
     recorder.start();
-    recordStart = performance.now();
     micBtn.setAttribute("aria-pressed", "true");
     $("#mic-label").textContent = "Stop and ask";
     sendBtn.disabled = true;
-    tick = setInterval(() => showVoice(`Listening ${fmtMs(performance.now() - recordStart)} · tap the microphone when you are done`), 200);
-    stopTimer = setTimeout(stopRecording, MAX_RECORDING_MS);
+    discard = false;
+    // Arrêt automatique : silence après la parole, durée maximale, ou aucun son (sans envoi) — limites de .env
+    guard = window.AYDVoiceGuard.watch(stream, {
+      onTick: (ms, lim, heard) => showVoice(heard
+        ? `Listening ${fmtMs(ms)} · sends after ${lim.silence_ms / 1000} s of silence (max ${lim.max_seconds} s)`
+        : `Listening ${fmtMs(ms)} · speak now`),
+      onStop: (reason) => stopRecording(reason === "no_speech"),
+    });
   }
 
-  function stopRecording() {
+  function stopRecording(cancel = false) {
     if (!recorder) return;
-    clearTimeout(stopTimer);
-    clearInterval(tick);
+    if (guard) { guard.stop(); guard = null; }
+    discard = cancel === true;
     micBtn.setAttribute("aria-pressed", "false");
     $("#mic-label").textContent = "Start speaking";
     const r = recorder;
@@ -427,6 +435,10 @@
   }
 
   async function handleRecording() {
+    if (discard) {
+      showVoice("Nothing was heard, so nothing was sent. Tap the microphone and speak.", true);
+      return;
+    }
     setBusy(true);
     showVoice("Turning your voice into text");
     let result;

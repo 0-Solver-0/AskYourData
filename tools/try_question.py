@@ -48,6 +48,9 @@ def main() -> int:
     section("1. Question d'origine")
     print(data.get("question"))
 
+    if data.get("rewritten"):
+        print(f"Reformulée : {data['rewritten']}")
+
     section(f"2. Découpage (PREP : {data.get('prep_status')})")
     for key, value in (data.get("structured_request") or {}).items():
         if value:

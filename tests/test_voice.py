@@ -81,3 +81,12 @@ def test_routes(monkeypatch):
     assert resp.status_code == 200 and resp.get_json()["text"] == "hello"
     monkeypatch.setattr(voice, "transcribe", lambda data: (_ for _ in ()).throw(voice.VoiceError("bad audio")))
     assert client.post("/api/v1/transcribe", data=b"x").status_code == 400
+
+
+def test_recording_limits_come_from_env_with_flagged_defaults():
+    env = dict(ENV, VOICE_MAX_SECONDS="15", VOICE_SILENCE_MS="1500", VOICE_NO_SPEECH_MS="abc")
+    limits = voice.recording_limits(env)
+    assert (limits["max_seconds"], limits["silence_ms"], limits["no_speech_ms"]) == (15, 1500, 5000)
+    assert limits["defaults"] == ["VOICE_NO_SPEECH_MS"]
+    assert voice.recording_limits(dict(ENV, VOICE_MAX_SECONDS="999"))["max_seconds"] == 20   # hors bornes
+    assert voice.voice_status(env)["recording"]["max_seconds"] == 15

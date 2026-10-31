@@ -140,6 +140,8 @@ main { max-width: 1040px; margin: 0 auto; padding: 0 24px 80px; }
 .working-time { font-variant-numeric: tabular-nums; }
 .pulse { width: 10px; height: 10px; border-radius: 50%; background: var(--action); animation: beat 1s ease-in-out infinite; }
 
+.understood { margin: 0 0 8px; font-size: 15px; color: var(--muted); max-width: 70ch; }
+.understood strong { color: var(--ink); font-weight: 600; }
 .assumption {
   margin: 0 0 12px; padding: 6px 12px; display: inline-block; font-size: 14px; color: var(--ink);
   background: var(--warn-bg); border-radius: var(--radius-sm);
