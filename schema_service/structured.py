@@ -653,6 +653,15 @@ def plan_structured(sq: StructuredQuestion, table_sims: dict[str, float],
             if r and r["to_table"] in tables_by_name and r["to_table"] != table:
                 used.append(r)
                 reasons.setdefault(r["to_table"], f"lookup:{table}.{cname}")
+    # Une clé toujours envoyée (always_include) amène sa table cible, avec ses colonnes toujours envoyées :
+    # stock_quant.location_id → stock_location.usage (filtre « emplacements internes » du stock)
+    for table in list(reasons):
+        for c in columns_by_table.get(table, []):
+            r = by_fk.get((table, c["column_name"])) if c.get("always_include") else None
+            if r and r["to_table"] in tables_by_name and r["to_table"] != table and r not in used:
+                used.append(r)
+                reasons.setdefault(r["to_table"], f"always-key:{table}.{c['column_name']}")
+
     def add_name_hop(target: str) -> None:
         """Table sans colonne de nom : suivre sa clé (obligatoire de préférence) vers une table qui en a."""
         cols = columns_by_table.get(target, [])
