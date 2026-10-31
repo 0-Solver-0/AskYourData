@@ -10,6 +10,9 @@ Pipeline actuel :
 Endpoints :
   GET  /                   — interface web (api_service/static)
   GET  /v2                 — interface web, version conversation (api_service/static/v2)
+  GET  /classic            — interface classique (en mode public, / sert la version conversation)
+  GET  /admin              — tableau de bord des clés et des questions (jamais exposé derrière le proxy)
+  GET  /api/v1/access/me   — clé valide ? questions restantes (mode public)
   POST /api/v1/transcribe  — question dictée (WAV) → texte (Muse Voice Transcribe)
   POST /api/v1/ask         — question → découpage → schéma → SQL → vérification → exécution → réponse
   POST /api/v1/translate   — question → découpage → schéma → SQL (sans exécution)
@@ -36,7 +39,7 @@ import os
 import requests
 from flask import Flask, jsonify, request, send_from_directory
 
-from api_service import executor, pipeline, voice
+from api_service import access, executor, pipeline, voice
 from api_service.llm import ROLES, LLMClient, LLMError
 from api_service.prep import structure_question
 
@@ -55,6 +58,52 @@ STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 app = Flask(__name__, static_folder=STATIC_DIR, static_url_path="/static")
 app.json.sort_keys = False   # garder l'ordre des champs (fichiers d'enrichissement lisibles)
 app.config["SECRET_KEY"] = SECRET_KEY
+
+# ── Accès public (clés, quotas, journal) : voir api_service/access.py ───────────
+ACCESS = access.Settings.from_env()
+GUARD = access.Guard()
+PUBLIC_ACCOUNT_ID = int(os.getenv("PUBLIC_ACCOUNT_ID", "1"))
+# Routes ouvertes au public derrière le proxy (PUBLIC_MODE) ; toutes les autres répondent 404 de
+# l'extérieur et restent utilisables en direct sur le serveur (tunnel SSH, docker exec).
+PUBLIC_PATHS = {"/", "/v2", "/robots.txt", "/api/v1/ask", "/api/v1/transcribe", "/api/v1/access/me",
+                "/api/v1/health"}
+if ACCESS.public:
+    app.config["MAX_CONTENT_LENGTH"] = 2 * 1024 * 1024     # audio de 20 s : environ 0,7 Mo
+
+
+def via_proxy() -> bool:
+    """Requête venue de l'extérieur : le proxy (Caddy) ajoute toujours X-Forwarded-For."""
+    return "X-Forwarded-For" in request.headers
+
+
+def client_ip() -> str:
+    forwarded = request.headers.get("X-Forwarded-For", "")
+    return forwarded.split(",")[0].strip() or request.remote_addr or "?"
+
+
+@app.before_request
+def public_gate():
+    """Mode public : derrière le proxy, seules l'interface et les routes de question existent."""
+    if not ACCESS.public or not via_proxy():
+        return None
+    if request.path in PUBLIC_PATHS or (request.path.startswith("/static/") and request.path != "/static/admin.html"):
+        return None
+    return jsonify({"error": "Not found"}), 404
+
+
+def access_error(exc: "access.AccessError"):
+    return jsonify({"error": exc.message, "code": exc.code}), exc.status
+
+
+def open_access():
+    """Connexion à la base des clés ; indisponible = accès refusé (jamais ouvert par défaut)."""
+    try:
+        conn = access.connect()
+        access.ensure_schema(conn)
+        return conn
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Base des clés indisponible : %s", exc)
+        raise access.AccessError(503, "unavailable", "The service is not available right now. Please try later.")
 
 
 # ── Client LLM (rôles prep et sql) ──────────────────────────────────────────
@@ -123,6 +172,13 @@ def health():
         if isinstance(s, dict)
     )
 
+    if ACCESS.public and via_proxy():
+        # Public : seulement ce dont l'interface a besoin (limites du micro, noms des modèles)
+        llm = llm_status()
+        models = {r: (llm.get(r) or {}).get("primary", {}).get("model") for r in ("prep", "sql")}
+        rec = (voice.voice_status() or {}).get("recording")
+        return jsonify({"api": "ok", "ready": all_ok, "public": True, "models": models,
+                        "voice": {"recording": rec} if rec else {}})
     return jsonify({
         "api":      "ok",
         "services": statuses,
@@ -402,8 +458,57 @@ def translate():
 
 @app.get("/")
 def home():
-    """Interface web : question écrite ou dictée → réponse."""
+    """Interface web : la version conversation en mode public, la version classique sinon."""
+    if ACCESS.public:
+        return send_from_directory(os.path.join(STATIC_DIR, "v2"), "index.html")
     return send_from_directory(STATIC_DIR, "index.html")
+
+
+@app.get("/classic")
+def home_classic():
+    """Interface classique (hors mode public : non exposée derrière le proxy)."""
+    return send_from_directory(STATIC_DIR, "index.html")
+
+
+@app.get("/robots.txt")
+def robots():
+    """Le site de test n'a pas à être indexé par les moteurs de recherche."""
+    return app.response_class("User-agent: *\nDisallow: /\n", mimetype="text/plain")
+
+
+@app.get("/admin")
+def admin_page():
+    """Tableau de bord (clés, personnes actives, questions, coût). Jamais exposé derrière le proxy."""
+    return send_from_directory(STATIC_DIR, "admin.html")
+
+
+@app.get("/api/v1/admin/stats")
+def admin_stats():
+    try:
+        conn = access.connect()
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"error": f"base des clés indisponible : {exc}"}), 503
+    try:
+        return jsonify(access.stats(conn, ACCESS))
+    finally:
+        conn.close()
+
+
+@app.get("/api/v1/access/me")
+def access_me():
+    """Clé valide ? Questions restantes. Hors mode public : aucune clé n'est demandée."""
+    if not ACCESS.public:
+        return jsonify({"required": False})
+    try:
+        conn = open_access()
+        try:
+            found = access.check_key(conn, request.headers.get("X-Access-Key"), client_ip(), GUARD, ACCESS)
+        finally:
+            conn.close()
+    except access.AccessError as exc:
+        return access_error(exc)
+    return jsonify({"required": True, "name": found["name"], "quota": found["quota"], "used": found["used"],
+                    "remaining": access.remaining(found)})
 
 
 @app.get("/v2")
@@ -418,14 +523,32 @@ def transcribe():
     Question dictée → texte (Muse Voice Transcribe). Body : multipart, champ « audio » (WAV mono
     16 bits, 16 ou 24 kHz) ou WAV brut. Le texte suit ensuite le chemin d'une question écrite.
     """
-    upload = request.files.get("audio")
-    wav = upload.read() if upload else request.get_data()
+    conn = found = None
+    if ACCESS.public:
+        try:
+            conn = open_access()
+            found = access.check_key(conn, request.headers.get("X-Access-Key"), client_ip(), GUARD, ACCESS)
+            access.touch_for_voice(conn, found, ACCESS)
+        except access.AccessError as exc:
+            if conn:
+                conn.close()
+            return access_error(exc)
     try:
-        out = voice.transcribe(wav)
-    except voice.VoiceError as exc:
-        return jsonify({"error": str(exc)}), 400
-    logger.info("Transcribe — %s ms d'audio en %s ms", out["audio_ms"], out["elapsed_ms"])
-    return jsonify(out)
+        upload = request.files.get("audio")
+        wav = upload.read() if upload else request.get_data()
+        try:
+            out = voice.transcribe(wav)
+        except voice.VoiceError as exc:
+            return jsonify({"error": str(exc)}), 400
+        logger.info("Transcribe — %s ms d'audio en %s ms", out["audio_ms"], out["elapsed_ms"])
+        if found:
+            access.record(conn, found["id"], "transcribe", question=out.get("text"), status="ok",
+                          cost_usd=out.get("cost_usd") or 0, elapsed_ms=out.get("elapsed_ms"),
+                          audio_ms=out.get("audio_ms"))
+        return jsonify(out)
+    finally:
+        if conn:
+            conn.close()
 
 
 @app.post("/api/v1/ask")
@@ -443,6 +566,11 @@ def ask():
     data = request.get_json(silent=True) or {}
     question = (data.get("question") or "").strip()
     account_id = data.get("account_id")
+    if ACCESS.public:
+        # Public : compte de démo imposé, découpage et raisonnement non modifiables, question bornée
+        account_id, data = PUBLIC_ACCOUNT_ID, {}
+        if len(question) > access.MAX_QUESTION_CHARS:
+            return jsonify({"error": f"Questions are limited to {access.MAX_QUESTION_CHARS} characters."}), 400
     if not question:
         return jsonify({"error": "'question' obligatoire"}), 400
     if not account_id:
@@ -451,12 +579,33 @@ def ask():
         client = get_llm()
     except Exception as exc:  # noqa: BLE001
         return jsonify({"error": f"Configuration LLM invalide : {exc}"}), 500
-    logger.info("Ask — %s", question[:80])
-    out = pipeline.ask(client, call_structured_schema, executor.execute, question, int(account_id),
-                       structured=data.get("structured"), reasoning=data.get("reasoning"),
-                       extend_fn=call_extend_schema)
-    logger.info("Ask — %s en %s ms (%s $)", out["status"], out["timings_ms"].get("total"), out["cost_usd"])
-    return jsonify(out)
+
+    conn = found = None
+    if ACCESS.public:
+        try:
+            conn = open_access()
+            found = access.check_key(conn, request.headers.get("X-Access-Key"), client_ip(), GUARD, ACCESS)
+            found = access.reserve_question(conn, found, ACCESS)
+        except access.AccessError as exc:
+            if conn:
+                conn.close()
+            return access_error(exc)
+    try:
+        logger.info("Ask — %s", question[:80])
+        out = pipeline.ask(client, call_structured_schema, executor.execute, question, int(account_id),
+                           structured=data.get("structured"), reasoning=data.get("reasoning"),
+                           extend_fn=call_extend_schema)
+        logger.info("Ask — %s en %s ms (%s $)", out["status"], out["timings_ms"].get("total"), out["cost_usd"])
+        if found:
+            access.record(conn, found["id"], "ask", question=question, rewritten=out.get("rewritten"),
+                          status=out.get("status"), cost_usd=out.get("cost_usd") or 0,
+                          elapsed_ms=(out.get("timings_ms") or {}).get("total"),
+                          executed_sql=out.get("executed_sql"))
+            out["access"] = {"quota": found["quota"], "used": found["used"], "remaining": access.remaining(found)}
+        return jsonify(out)
+    finally:
+        if conn:
+            conn.close()
 
 
 if __name__ == "__main__":

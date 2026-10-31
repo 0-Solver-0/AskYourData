@@ -1,0 +1,48 @@
+# ══════════════════════════════════════════════════════════════════════════════
+#  AskYourData — production (test public). À combiner avec docker-compose.yml :
+#    docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+#  Ne contient que les différences avec la configuration locale :
+#    - aucun port interne publié (5000, 8002, 5433 restent dans le réseau Docker) ;
+#    - API sur 127.0.0.1:5000 seulement, pour le tableau de bord par tunnel SSH ;
+#    - Caddy devant l'API : HTTPS automatique (nécessaire au micro), liste blanche des routes ;
+#    - PUBLIC_MODE : clé d'accès obligatoire, quotas, journal des questions.
+#  Guide : documentation/DEPLOY.md
+# ══════════════════════════════════════════════════════════════════════════════
+name: askyourdata
+
+services:
+  postgres_nl2sql:
+    ports: !reset []
+
+  schema_service:
+    ports: !reset []
+
+  api_service:
+    ports: !override
+      - "127.0.0.1:5000:5000"
+    environment:
+      PUBLIC_MODE: "true"
+
+  caddy:
+    image: caddy:2.8-alpine
+    container_name: askyourdata_caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      SITE_DOMAIN: ${SITE_DOMAIN:?SITE_DOMAIN manquant dans .env (ex. 1-2-3-4.sslip.io)}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - nl2sql_net
+    depends_on:
+      - api_service
+
+volumes:
+  caddy_data:
+    name: askyourdata_caddy_data
+  caddy_config:
+    name: askyourdata_caddy_config

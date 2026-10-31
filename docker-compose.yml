@@ -162,6 +162,11 @@ services:
       VOICE_MAX_SECONDS:   ${VOICE_MAX_SECONDS:-}
       VOICE_SILENCE_MS:    ${VOICE_SILENCE_MS:-}
       VOICE_NO_SPEECH_MS:  ${VOICE_NO_SPEECH_MS:-}
+      # Test public (voir api_service/access.py) : false en local, true dans docker-compose.prod.yml
+      PUBLIC_MODE:              ${PUBLIC_MODE:-false}
+      ACCESS_DEFAULT_QUOTA:     ${ACCESS_DEFAULT_QUOTA:-20}
+      ACCESS_GLOBAL_BUDGET_USD: ${ACCESS_GLOBAL_BUDGET_USD:-20}
+      ACCESS_MIN_INTERVAL_S:    ${ACCESS_MIN_INTERVAL_S:-5}
       # Exécution en lecture seule sur la base source (rôle créé par tools/create_readonly_role.py)
       SOURCE_DB_HOST:      ${SOURCE_DB_HOST:-postgres_odoo}
       SOURCE_DB_PORT:      ${SOURCE_DB_PORT:-5432}
