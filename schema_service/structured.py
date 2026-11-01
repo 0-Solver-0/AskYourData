@@ -26,11 +26,14 @@ Le découpage est écrit à la main pour l'instant ; il sera produit par le rôl
      (res_users → partner_id → res_partner) ;
   5. jointures entre tables retenues (graphe des clés étrangères) ; une valeur citée n'ajoute
      sa table que si celle-ci est reliée directement à une table retenue ;
-  6. schéma minimal : clé primaire, colonnes retenues, clés de jointure, colonne de nom.
+  6. schéma minimal : clé primaire, colonnes retenues, colonnes « toujours envoyées » (enrichissement :
+     statut, type de document…), clés de jointure, colonne de nom.
 """
 
 from __future__ import annotations
 
+import re
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -40,7 +43,6 @@ from .search import (
     ValueMatch,
     build_graph,
     estimate_tokens,
-    join_tables,
     pick_join_relations,
     render_table,
     shortest_path,
@@ -68,6 +70,9 @@ class StructuredQuestion:
     group_by: list[str] = field(default_factory=list)
     period: Optional[str] = None
     order: Optional[str] = None
+    # Morceaux qui portent sur une autre chose que le sujet : {morceau: entité} (« vendor » → « vendor »,
+    # « country » → « customer »). Les autres morceaux portent sur le sujet.
+    entities: dict[str, str] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, data: dict) -> "StructuredQuestion":
@@ -87,7 +92,15 @@ class StructuredQuestion:
 
         period = " ".join(str(data.get("period") or "").split()) or None
         order = " ".join(str(data.get("order") or "").split()) or None
-        return cls(subject, as_list("measures"), as_list("filters"), as_list("group_by"), period, order)
+        return cls(subject, as_list("measures"), as_list("filters"), as_list("group_by"), period, order,
+                   parse_entities(data.get("entities")))
+
+    def entity_of(self, text: str) -> Optional[str]:
+        """Entité d'un morceau (None : le morceau porte sur le sujet)."""
+        entity = self.entities.get(" ".join(text.lower().split()))
+        if entity and _words(entity) != _words(self.subject):
+            return entity
+        return None
 
     def pieces(self) -> list[tuple[str, str]]:
         """Morceaux cherchés parmi les colonnes : [(rôle, texte)]."""
@@ -97,6 +110,23 @@ class StructuredQuestion:
         if self.period:
             out.append(("period", self.period))
         return out
+
+
+def parse_entities(value) -> dict[str, str]:
+    """
+    {"vendor": "vendor", "country": "customer"} ou [{"text": "country", "entity": "customer"}]
+    → {morceau en minuscules: entité}. Entrées vides ou mal formées ignorées.
+    """
+    pairs: list[tuple] = []
+    if isinstance(value, dict):
+        pairs = list(value.items())
+    elif isinstance(value, list):
+        pairs = [(v.get("text"), v.get("entity")) for v in value if isinstance(v, dict)]
+    out: dict[str, str] = {}
+    for text, entity in pairs:
+        if isinstance(text, str) and isinstance(entity, str) and text.strip() and entity.strip():
+            out[" ".join(text.lower().split())] = " ".join(entity.split())
+    return out
 
 
 @dataclass
@@ -113,6 +143,9 @@ class StructuredParams:
     table_piece_hops: int = 4        # … si elle est à moins de N liens du sujet
     token_budget: int = 3000
 
+
+# Tables candidates d'une entité (« vendor » → product_supplierinfo, res_partner, …)
+ENTITY_CANDIDATES = 3
 
 # Colonnes techniques utiles pour un rôle précis (« new customers this month » → create_date)
 ROLE_ALLOWED_TECHNICAL = {"period": {"create_date"}}
@@ -153,30 +186,328 @@ def _name_column(columns: list[dict]) -> Optional[str]:
     return next((n for n in NAME_COLUMNS if n in names), None)
 
 
+def build_forward_graph(relations: list[dict]) -> dict[str, set[str]]:
+    """Graphe orienté des clés étrangères (ligne → produit → modèle → catégorie), clés techniques exclues."""
+    graph: dict[str, set[str]] = {}
+    for r in relations:
+        if r["from_column"] in TECHNICAL_FK_COLUMNS or r["from_table"] == r["to_table"]:
+            continue
+        graph.setdefault(r["from_table"], set()).add(r["to_table"])
+    return graph
+
+
+def _forward_path(forward: dict[str, set[str]], start: str, goal: str, max_hops: int) -> Optional[list[str]]:
+    """Plus court chemin en suivant les clés dans leur sens : un attribut s'atteint par des many2one."""
+    if start == goal:
+        return [start]
+    queue, seen = deque([[start]]), {start}
+    while queue:
+        path = queue.popleft()
+        if len(path) - 1 >= max_hops:
+            continue
+        for nxt in sorted(forward.get(path[-1], ())):
+            if nxt in seen:
+                continue
+            if nxt == goal:
+                return path + [nxt]
+            seen.add(nxt)
+            queue.append(path + [nxt])
+    return None
+
+
+def _path_from_selected(graph: dict, selected: list[str], target: str, max_hops: int,
+                        forward: Optional[dict[str, set[str]]] = None) -> Optional[list[str]]:
+    """
+    Chemin vers `target` depuis la table retenue la plus proche. Avec `forward`, un chemin qui suit
+    les clés dans leur sens est préféré (sale_order_line → product_product → product_template →
+    product_category plutôt que par stock_putaway_rule, qui a aussi un produit et une catégorie).
+    """
+    if forward is not None:
+        best = None
+        for start in selected:
+            path = _forward_path(forward, start, target, max_hops)
+            if path and (best is None or len(path) < len(best)):
+                best = path
+        if best:
+            return best
+    best = None
+    for start in selected:
+        path = shortest_path(graph, start, target, max_hops)
+        if path and (best is None or len(path) < len(best)):
+            best = path
+    return best
+
+
+def _words(text: str) -> set[str]:
+    """Mots simples, au singulier grossier (« categories » → « categori », « teams » → « team »)."""
+    out = set()
+    for w in re.findall(r"[a-z]+", (text or "").lower()):
+        if len(w) > 3 and w.endswith("ies"):
+            w = w[:-3] + "y"
+        elif len(w) > 3 and w.endswith("s") and not w.endswith("ss"):
+            w = w[:-1]
+        out.add(w)
+    return out
+
+
+def _label_covers(col: dict, text: str) -> bool:
+    """Le libellé (ou le nom) de la colonne contient-il tous les mots du morceau ?"""
+    label = " ".join(str(col.get(k) or "") for k in ("label", "odoo_label", "synonyms", "column_name"))
+    return bool(_words(text)) and _words(text) <= _words(label.replace("_", " "))
+
+
+def line_table(subject: str, relations: list[dict], tables_by_name: dict[str, dict]) -> Optional[str]:
+    """Table des lignes d'un document (sale_order → sale_order_line) : <sujet>_line avec une clé vers le sujet."""
+    child = f"{subject}_line"
+    if child not in tables_by_name:
+        return None
+    linked = any(r["from_table"] == child and r["to_table"] == subject for r in relations)
+    return child if linked else None
+
+
+def order_subjects(table_sims: dict[str, float], tables_by_name: dict[str, dict], relations: list[dict],
+                   subject: Optional[str] = None) -> list[str]:
+    """
+    Classement des tables pour le sujet : par similarité, puis
+      - `subject` imposé (choix du juge, liste fermée) : en tête ;
+      - si la table de tête est la table des lignes d'un document (sale_order_line), son en-tête
+        (sale_order) passe en tête : les lignes suivent l'en-tête (line_table), l'inverse non.
+    """
+    ranking = sorted((t for t in table_sims if t in tables_by_name), key=lambda t: table_sims[t], reverse=True)
+    first = subject if subject and subject in tables_by_name else (ranking[0] if ranking else None)
+    if first and first.endswith("_line"):
+        header = first[:-len("_line")]
+        if line_table(header, relations, tables_by_name) == first:
+            first = header
+    if not first:
+        return ranking
+    return [first] + [t for t in ranking if t != first]
+
+
+def _connected(graph: dict, tables: set[str], a: str, b: str) -> bool:
+    """a et b sont-ils déjà reliés en ne passant que par `tables` ?"""
+    queue, seen = deque([a]), {a}
+    while queue:
+        t = queue.popleft()
+        if t == b:
+            return True
+        for nxt in graph.get(t, {}):
+            if nxt in tables and nxt not in seen:
+                seen.add(nxt)
+                queue.append(nxt)
+    return False
+
+
+def neighbor_tables(selected: list[str], relations: list[dict], tables_by_name: dict[str, dict]) -> list[str]:
+    """Tables retenues + tables reliées par une clé (dans un sens ou dans l'autre), clés techniques exclues."""
+    chosen = set(selected)
+    out = list(selected)
+    for r in relations:
+        if r["from_column"] in TECHNICAL_FK_COLUMNS:
+            continue
+        for a, b in ((r["from_table"], r["to_table"]), (r["to_table"], r["from_table"])):
+            if a in chosen and b in tables_by_name and b not in out:
+                out.append(b)
+    return out
+
+
+# Genre de colonne attendu d'après les mots du manque signalé par le modèle SQL (anglais) :
+# « sale date of the order » → date ; « quantity sold », « unit price » → nombre. Les deux à la fois
+# (« number of days late ») ou aucun : pas de contrainte.
+_DATE_WORDS = re.compile(r"\b(date|dates|deadline|when)\b", re.I)
+_NUMBER_WORDS = re.compile(r"\b(amounts?|quantit(y|ies)|qty|prices?|costs?|revenues?|values?|totals?|sum|average|"
+                           r"count|number of|margins?|balance|spend|spending|rates?)\b", re.I)
+
+
+def expected_kind(text: str) -> Optional[str]:
+    """date, number ou None (rien d'évident) pour un mot manquant."""
+    is_date, is_number = bool(_DATE_WORDS.search(text)), bool(_NUMBER_WORDS.search(text))
+    if is_date == is_number:
+        return None
+    return "date" if is_date else "number"
+
+
+def find_missing(phrases: list[str], selected: list[str], column_sims: dict[tuple[str, str], list[float]],
+                 phrase_table_sims: list[dict[str, float]], tables_by_name: dict[str, dict],
+                 columns_by_table: dict[str, list[dict]], relations: list[dict], params: StructuredParams,
+                 max_new_tables: int = 4, present: Optional[set[tuple[str, str]]] = None
+                 ) -> tuple[dict, dict, list[dict]]:
+    """
+    Recherche complémentaire : chaque mot manquant (en mots métier) est cherché
+      a. parmi les colonnes des tables retenues et de leurs voisines (`column_sims`, une similarité
+         par mot) : une colonne au-dessus de min_similarity suffit ;
+      b. sinon parmi les fiches de tables (`phrase_table_sims`) : une table au-dessus de
+         table_piece_min, reliée à une table retenue en table_piece_hops liens au plus.
+    Le genre de colonne doit convenir au mot : une date ne reçoit qu'une colonne de date, une quantité,
+    un prix ou un montant qu'une colonne numérique (expected_kind) ; sans colonne du bon genre, on
+    passe aux fiches de tables.
+    `present` : colonnes déjà dans le schéma envoyé. Le modèle les avait et les juge insuffisantes :
+    elles ne sont jamais renvoyées (« received status » → pas encore sale_order.state).
+    Une table qui ressemble au mot au moins autant que la meilleure colonne l'emporte : le manque
+    désigne alors des enregistrements (« supplier invoices and their amounts » → account_move, et non
+    res_partner.supplier_rank).
+    Renvoie (extra_columns, extra_tables, rapport par mot) pour plan_structured.
+    """
+    present = present or set()
+    graph = build_graph(relations)
+    kinds = {(t, c["column_name"]): column_kind(c) for t, cols in columns_by_table.items() for c in cols}
+    usable = {(t, c["column_name"]) for t, cols in columns_by_table.items() for c in cols if _usable(c, "period")}
+    extra_columns: dict[tuple[str, str], str] = {}
+    extra_tables: dict[str, str] = {}
+    report = []
+    new_tables: set[str] = set()
+    for i, text in enumerate(phrases):
+        want = expected_kind(text)
+        scored = sorted(((float(sims[i]), t, c) for (t, c), sims in column_sims.items()
+                         if i < len(sims) and (t, c) in usable and (t, c) not in present
+                         and (want is None or kinds.get((t, c)) == want)),
+                        reverse=True)
+        # Fiche de table la plus proche, reliée aux tables retenues (piste « enregistrements »)
+        sims = phrase_table_sims[i] if i < len(phrase_table_sims) else {}
+        hit = None
+        for sim, t in sorted(((v, t) for t, v in sims.items() if t in tables_by_name), reverse=True):
+            if sim < params.table_piece_min:
+                break
+            if t in selected or _path_from_selected(graph, selected, t, params.table_piece_hops):
+                hit = (sim, t)
+                break
+        best_column = scored[0][0] if scored else 0.0
+        if hit and hit[1] not in selected and hit[0] >= best_column and len(new_tables) < max_new_tables:
+            sim, t = hit
+            extra_tables[t] = text
+            new_tables.add(t)
+            report.append({"text": text, "found": "table", "table": t, "column": None, "similarity": round(sim, 3)})
+            continue
+        # La meilleure colonne de la table du sujet, celle des autres tables retenues ET la meilleure
+        # colonne tout court (si elles diffèrent) : « manager » → hr_employee.parent_id et
+        # hr_department.manager_id ; le modèle SQL choisit d'après les libellés et les notes.
+        # Ordre : table du sujet (première retenue), autres tables retenues, puis toutes ; 3 au plus.
+        subject_table = selected[0] if selected else None
+        in_subject = next((x for x in scored if x[1] == subject_table), None)
+        in_selected = next((x for x in scored if x[1] in selected and x[1] != subject_table), None)
+        picks = []
+        for cand in (in_subject, in_selected):
+            if cand and cand[0] >= params.min_similarity:
+                picks.append(cand)
+        if scored and scored[0] not in picks and scored[0][0] >= params.min_similarity and \
+                (scored[0][1] in selected or scored[0][1] in new_tables or len(new_tables) < max_new_tables):
+            picks.append(scored[0])
+        if picks:
+            for sim, t, c in picks:
+                extra_columns[(t, c)] = text
+                if t not in selected:
+                    new_tables.add(t)
+            sim, t, c = picks[0]
+            entry = {"text": text, "found": "column", "table": t, "column": c, "similarity": round(sim, 3)}
+            if len(picks) > 1:
+                entry["also"] = [{"table": t2, "column": c2, "similarity": round(s2, 3)} for s2, t2, c2 in picks[1:]]
+            report.append(entry)
+            continue
+        if hit and (hit[1] in selected or len(new_tables) < max_new_tables):
+            sim, t = hit
+            if t not in selected:
+                extra_tables[t] = text
+                new_tables.add(t)
+            report.append({"text": text, "found": "table", "table": t, "column": None, "similarity": round(sim, 3)})
+            continue
+        best = scored[0] if scored else None
+        report.append({"text": text, "found": None, "table": best[1] if best else None,
+                       "column": best[2] if best else None,
+                       "similarity": round(best[0], 3) if best else None})
+    return extra_columns, extra_tables, report
+
+
+def _entity_columns(table: str, role: str, text: str, i: int, forward: dict[str, set[str]],
+                    column_sims: dict[tuple[str, str], list[float]], columns_by_table: dict[str, list[dict]],
+                    check_types: bool) -> list[tuple]:
+    """
+    Colonnes candidates pour un attribut d'entité : celles de sa table et des tables qu'elle
+    référence directement (clés suivies dans leur sens, clés techniques exclues), du meilleur au moins
+    bon score, au même format que le classement du plan : (score, score, table, colonne, genre).
+    """
+    scope = [table] + sorted(forward.get(table, set()) - {table})
+    out = []
+    for t in scope:
+        for col in columns_by_table.get(t, []):
+            sims = column_sims.get((t, col["column_name"]))
+            if sims and i < len(sims) and _usable(col, role):
+                out.append((float(sims[i]), float(sims[i]), t, col["column_name"], column_kind(col)))
+    if check_types:
+        allowed = ROLE_KINDS.get(role)
+        typed = [x for x in out if allowed is None or x[4] in allowed]
+        out = typed or out
+    return sorted(out, reverse=True)
+
+
+def _choose_entity_table(ent: Optional[dict], subject_set: set[str], fk_targets: dict[tuple[str, str], str],
+                         tables_by_name: dict[str, dict]) -> Optional[dict]:
+    """
+    Table d'une entité parmi ses candidates (« candidates », par score) : la première que le sujet
+    référence par une clé étrangère (« vendor » → res_partner plutôt que product_supplierinfo), sinon
+    la première. Accepte aussi une entité déjà résolue ({"entity", "table"}).
+    """
+    if not ent:
+        return None
+    options = ent.get("candidates") or ([{"table": ent["table"], "similarity": ent.get("similarity"),
+                                          "via": ent.get("via")}] if ent.get("table") else [])
+    options = [o for o in options if o["table"] in tables_by_name]
+    if not options:
+        return None
+    referenced = {to for (frm, _), to in fk_targets.items() if frm in subject_set}
+    chosen = next((o for o in options if o["table"] in referenced or o["table"] in subject_set), options[0])
+    return {"entity": ent["entity"], "table": chosen["table"], "similarity": chosen.get("similarity"),
+            "via": chosen.get("via"), "candidates": [o["table"] for o in options]}
+
+
 def plan_structured(sq: StructuredQuestion, table_sims: dict[str, float],
                     column_sims: dict[tuple[str, str], list[float]], tables_by_name: dict[str, dict],
                     columns_by_table: dict[str, list[dict]], relations: list[dict],
                     params: StructuredParams, value_matches: Optional[list[ValueMatch]] = None,
-                    piece_table_sims: Optional[list[dict[str, float]]] = None) -> dict:
+                    piece_table_sims: Optional[list[dict[str, float]]] = None,
+                    extra_columns: Optional[dict[tuple[str, str], str]] = None,
+                    extra_tables: Optional[dict[str, str]] = None, subject: Optional[str] = None,
+                    piece_entities: Optional[list[Optional[dict]]] = None,
+                    column_texts: Optional[dict[tuple[str, str], list[Optional[str]]]] = None) -> dict:
     """
+    `piece_entities` : pour chaque morceau, {"entity", "table", "similarity"} quand il porte sur une autre
+    chose que le sujet (table trouvée par les synonymes des fiches), sinon None. Un morceau qui nomme
+    l'entité (« vendor ») prend la clé étrangère du sujet vers sa table ; un attribut de l'entité
+    (« country » de « customer ») est cherché d'abord parmi les colonnes de sa table.
+    `column_texts` : texte (libellé ou synonyme) qui a donné chaque score de colonne, pour la trace.
+    `extra_columns` / `extra_tables` : ajouts de la recherche complémentaire (find_missing),
+    {(table, colonne): mot manquant} et {table: mot manquant} ; rien n'est retiré du plan de base.
     `table_sims` : {table: similarité avec le sujet} ;
     `column_sims` : {(table, colonne): [similarité avec chaque morceau de sq.pieces()]} ;
     `piece_table_sims` : pour chaque morceau, {table: similarité du morceau avec la fiche de table}
     (calculé pour les regroupements seulement ; vide ailleurs).
     """
     pieces = sq.pieces()
-    ranking = sorted((t for t in table_sims if t in tables_by_name), key=lambda t: table_sims[t], reverse=True)
+    ranking = order_subjects(table_sims, tables_by_name, relations, subject)
+    by_score = sorted((t for t in table_sims if t in tables_by_name), key=lambda t: table_sims[t], reverse=True)
     candidates = ranking[:params.candidate_tables]
     if not candidates:
         return {"tables": [], "schema_ddl": "", "token_estimate": 0, "relations": [], "pieces": [],
                 "subject_ranking": []}
+    # En-tête et lignes forment un seul sujet : une question avec une mesure ou un regroupement sur
+    # des commandes ou des factures a presque toujours besoin des lignes (montant HT, produit, quantité).
+    lines = None
+    if any(role in ("measure", "group_by") for role, _ in pieces):
+        lines = line_table(ranking[0], relations, tables_by_name)
+    if lines and lines not in candidates:
+        candidates = candidates + [lines]
+    fk_targets = {(r["from_table"], r["from_column"]): r["to_table"] for r in relations}
+    forward = build_forward_graph(relations)
+    subject_set = set(ranking[:params.subject_tables]) | ({lines} if lines else set())
+    entities = [_choose_entity_table(piece_entities[i] if piece_entities and i < len(piece_entities) else None,
+                                     subject_set, fk_targets, tables_by_name) for i in range(len(pieces))]
+    candidates = candidates + [t for t in dict.fromkeys(e["table"] for e in entities if e)
+                               if t not in candidates]
 
     # 2. Meilleures colonnes de chaque morceau, parmi les colonnes des tables candidates :
     #    - seules les colonnes dont le genre convient au rôle (s'il en existe au moins une) ;
     #    - sujet d'abord : si la table du sujet a une colonne presque aussi bonne que la meilleure
     #      (écart ≤ subject_margin), on ne garde que les colonnes du sujet ;
     #    - une correspondance suivante n'est gardée que si elle est presque aussi bonne.
-    subject_set = set(ranking[:params.subject_tables])
     piece_matches = []
     for i, (role, text) in enumerate(pieces):
         scored = []
@@ -194,24 +525,59 @@ def plan_structured(sq: StructuredQuestion, table_sims: dict[str, float],
             if typed and len(typed) < len(scored):
                 scored, type_checked = typed, True
         scored.sort(reverse=True)
+        # Morceau rattaché à une autre entité que le sujet
+        ent, entity_rule = entities[i], None
+        if ent and ent["table"] not in subject_set:
+            if _words(text) <= _words(ent["entity"]) | {"name"}:
+                # Il nomme l'entité : la clé étrangère du sujet vers sa table (account_move.partner_id → res_partner)
+                refs = [x for x in scored if x[2] in subject_set and fk_targets.get((x[2], x[3])) == ent["table"]]
+                # La clé de l'en-tête d'abord (account_move.partner_id), celle des lignes seulement à défaut :
+                # elles portent souvent le même synonyme, donc le même score
+                refs.sort(key=lambda x: (x[2] != ranking[0], -x[1]))
+                if refs:
+                    scored, entity_rule = refs[:1], "fk"
+                else:
+                    scored, entity_rule = [], "table"      # sa table est ajoutée avec le chemin (étape 3 bis)
+            else:
+                # Un attribut de l'entité : les colonnes de sa table et des tables qu'elle référence
+                # directement (« category » du produit : product_product → product_template.categ_id),
+                # toutes les tables seulement en secours
+                own = _entity_columns(ent["table"], role, text, i, forward, column_sims, columns_by_table,
+                                      params.check_types)
+                if own and own[0][1] >= params.min_similarity:
+                    scored, entity_rule = own, "attribute"
         subject_first = False
-        in_subject = [x for x in scored if x[2] in subject_set]
-        if in_subject and scored and in_subject[0][1] >= scored[0][1] - params.subject_margin:
-            subject_first = len(in_subject) < len(scored)
-            scored = in_subject
-        not_found = not scored or scored[0][1] < params.min_similarity
+        if entity_rule is None:
+            in_subject = [x for x in scored if x[2] in subject_set]
+            if in_subject and scored and in_subject[0][1] >= scored[0][1] - params.subject_margin:
+                subject_first = len(in_subject) < len(scored)
+                scored = in_subject
+        not_found = entity_rule != "table" and (not scored or (entity_rule != "fk" and
+                                                               scored[0][1] < params.min_similarity))
         kept = [] if not_found else [x for k, x in enumerate(scored[:params.matches_per_piece])
                                      if k == 0 or x[0] >= params.second_match_ratio * scored[0][0]]
-        piece_matches.append({
+
+        def via(t: str, c: str, i: int = i) -> Optional[str]:
+            texts = (column_texts or {}).get((t, c))
+            return texts[i] if texts and i < len(texts) else None
+
+        pm = {
             "role": role, "text": text, "type_checked": type_checked, "subject_first": subject_first,
             "not_found": not_found,
-            "matches": [{"table": t, "column": c, "similarity": round(sim, 3)} for _, sim, t, c, _ in kept],
-        })
+            "matches": [{"table": t, "column": c, "similarity": round(sim, 3), "via": via(t, c)}
+                        for _, sim, t, c, _ in kept],
+        }
+        if ent:
+            pm["entity"] = {"entity": ent["entity"], "table": ent["table"], "rule": entity_rule,
+                            "similarity": ent.get("similarity"), "via": ent.get("via")}
+        piece_matches.append(pm)
 
     # 3. Tables retenues : début du classement du sujet + tables qui portent une colonne retenue
     reasons: dict[str, str] = {}
     for t in ranking[:params.subject_tables]:
         reasons[t] = "subject"
+    if lines:
+        reasons.setdefault(lines, f"lines:{ranking[0]}")
     matched_cols: dict[str, set[str]] = {}
     for pm in piece_matches:
         for m in pm["matches"]:
@@ -220,21 +586,62 @@ def plan_structured(sq: StructuredQuestion, table_sims: dict[str, float],
     # 3 bis. Un regroupement qui désigne une table (« product category » → product_category)
     #        ajoute cette table et le chemin depuis le sujet, même à plusieurs liens.
     graph = build_graph(relations)
-    subject_table = ranking[0]
+    # Entité sans clé directe depuis le sujet, ou attribut trouvé dans sa table : la table de l'entité
+    # et le chemin depuis le sujet (clés suivies dans leur sens d'abord)
+    for pm in piece_matches:
+        rule = (pm.get("entity") or {}).get("rule")
+        target = (pm.get("entity") or {}).get("table")
+        if rule == "attribute" and pm["matches"]:
+            target = pm["matches"][0]["table"]          # table de l'entité ou sa voisine directe
+        if rule not in ("table", "attribute") or not target:
+            continue
+        others = [t for t in reasons if t != target]
+        path = _path_from_selected(graph, others, target, params.table_piece_hops, forward)
+        if not path:
+            pm["not_found"] = pm["not_found"] or rule == "table"
+            continue
+        reasons.setdefault(target, f"entity:{pm['entity']['entity']}")
+        for t in path[1:-1]:
+            reasons.setdefault(t, f"join:{path[0]}↔{target}")
     for i, pm in enumerate(piece_matches):
         sims = (piece_table_sims or [])[i] if piece_table_sims and i < len(piece_table_sims) else {}
-        if pm["role"] != "group_by" or not sims:
+        if pm["role"] != "group_by" or not sims or (pm.get("entity") or {}).get("rule"):
             continue
         best = max((t for t in sims if t in tables_by_name), key=lambda t: sims[t], default=None)
         pm["table_match"] = {"table": best, "similarity": round(sims[best], 3)} if best else None
         if not best or sims[best] < params.table_piece_min or best in reasons:
             continue
-        path = shortest_path(graph, subject_table, best, params.table_piece_hops)
+        # Entité déjà résolue : la colonne trouvée est une clé étrangère du sujet dont le libellé couvre
+        # tout le regroupement (« salesperson » → invoice_user_id « Salesperson », « sales team » →
+        # team_id « Sales Team ») ; on n'ajoute pas de table voisine. S'il reste un mot, le regroupement
+        # est un attribut de la cible : « product category » → product_id « Product » laisse « category »,
+        # donc product_category est ajoutée avec son chemin (ligne → produit → modèle → catégorie).
+        top = pm["matches"][0] if pm["matches"] else None
+        if top and top["table"] in subject_set and (top["table"], top["column"]) in fk_targets:
+            col = next((c for c in columns_by_table.get(top["table"], []) if c["column_name"] == top["column"]), {})
+            if _label_covers(col, pm["text"]):
+                continue
+        path = _path_from_selected(graph, list(reasons), best, params.table_piece_hops, forward)
         if not path:
             continue
         reasons[best] = f"group_by-table:{pm['text']}"
         for t in path[1:-1]:
-            reasons.setdefault(t, f"join:{subject_table}↔{best}")
+            reasons.setdefault(t, f"join:{path[0]}↔{best}")
+    # 3 ter. Ajouts de la recherche complémentaire (mots manquants signalés par le modèle SQL)
+    for (table, cname), text in (extra_columns or {}).items():
+        if table not in tables_by_name:
+            continue
+        matched_cols.setdefault(table, set()).add(cname)
+        reasons.setdefault(table, f"missing:{text}")
+    for table, text in (extra_tables or {}).items():
+        if table in reasons or table not in tables_by_name:
+            continue
+        path = _path_from_selected(graph, list(reasons), table, params.table_piece_hops, forward)
+        if not path:
+            continue
+        reasons[table] = f"missing-table:{text}"
+        for t in path[1:-1]:
+            reasons.setdefault(t, f"join:{path[0]}↔{table}")
     main = list(reasons)
 
     # 4. Clés étrangères retenues → tables cibles (noms), puis saut vers une table qui a un nom
@@ -246,21 +653,40 @@ def plan_structured(sq: StructuredQuestion, table_sims: dict[str, float],
             if r and r["to_table"] in tables_by_name and r["to_table"] != table:
                 used.append(r)
                 reasons.setdefault(r["to_table"], f"lookup:{table}.{cname}")
-    for target in [t for t, why in reasons.items() if why.startswith("lookup:")]:
+    # Une clé toujours envoyée (always_include) amène sa table cible, avec ses colonnes toujours envoyées :
+    # stock_quant.location_id → stock_location.usage (filtre « emplacements internes » du stock)
+    for table in list(reasons):
+        for c in columns_by_table.get(table, []):
+            r = by_fk.get((table, c["column_name"])) if c.get("always_include") else None
+            if r and r["to_table"] in tables_by_name and r["to_table"] != table and r not in used:
+                used.append(r)
+                reasons.setdefault(r["to_table"], f"always-key:{table}.{c['column_name']}")
+
+    def add_name_hop(target: str) -> None:
+        """Table sans colonne de nom : suivre sa clé (obligatoire de préférence) vers une table qui en a."""
         cols = columns_by_table.get(target, [])
         if _name_column(cols):
-            continue
+            return
         required = {c["column_name"] for c in cols if not c.get("is_nullable", True)}
         hops = [r for r in relations if r["from_table"] == target and r["from_column"] not in TECHNICAL_FK_COLUMNS
                 and r["to_table"] in tables_by_name and _name_column(columns_by_table.get(r["to_table"], []))]
-        hops.sort(key=lambda r: (r["to_table"] not in reasons, r["from_column"] not in required))
+        # La clé obligatoire d'abord (res_users.partner_id), puis une table déjà retenue
+        hops.sort(key=lambda r: (r["from_column"] not in required, r["to_table"] not in reasons))
         if hops:
             used.append(hops[0])
             reasons.setdefault(hops[0]["to_table"], f"name:{target}.{hops[0]['from_column']}")
 
+    for target in [t for t, why in reasons.items() if why.startswith("lookup:")]:
+        add_name_hop(target)
+
     # 5. Jointures entre tables principales, valeurs citées
-    for t, why in join_tables(graph, main, max_hops=2).items():
-        reasons.setdefault(t, why)
+    for i, a in enumerate(main):
+        for b in main[i + 1:]:
+            if _connected(graph, set(reasons), a, b):
+                continue
+            path = _path_from_selected(graph, [a], b, 2, forward) or _path_from_selected(graph, [b], a, 2, forward)
+            for t in (path or [])[1:-1]:
+                reasons.setdefault(t, f"join:{a}↔{b}")
     # Une valeur citée annote une table retenue, ou ajoute une table reliée directement
     # (clé étrangère dans un sens ou dans l'autre) à une table déjà retenue ; sinon elle est écartée.
     selected_now = set(reasons)
@@ -276,6 +702,10 @@ def plan_structured(sq: StructuredQuestion, table_sims: dict[str, float],
     for m in value_matches:
         reasons.setdefault(m.table_name, f"value:{m.table_name}.{m.column_name}")
         matched_cols.setdefault(m.table_name, set()).add(m.column_name)
+    # Toute table ajoutée pour relier ou regrouper (jointure, regroupement, valeur) doit aussi
+    # pouvoir afficher un nom : res_users arrivée par une jointure → res_partner.
+    for target in [t for t, why in reasons.items() if why.startswith(("join:", "group_by-table:", "value:"))]:
+        add_name_hop(target)
     core = [t for t, why in reasons.items() if not why.startswith(("lookup:", "name:"))]
     used += [r for r in pick_join_relations(relations, set(core), columns_by_table) if r not in used]
     # Une table de valeur ou de nom doit être reliée : clé directe vers une table déjà retenue
@@ -303,6 +733,8 @@ def plan_structured(sq: StructuredQuestion, table_sims: dict[str, float],
                 chosen.append((c, "primary_key"))
             elif c["column_name"] in matched_cols.get(table, set()):
                 chosen.append((c, "matched"))
+            elif c.get("always_include"):
+                chosen.append((c, "always"))
             elif c["column_name"] in join_cols.get(table, set()):
                 chosen.append((c, "join"))
             elif c["column_name"] in keep:
@@ -326,7 +758,14 @@ def plan_structured(sq: StructuredQuestion, table_sims: dict[str, float],
         "token_estimate": estimate_tokens(ddl),
         "relations": used,
         "pieces": piece_matches,
-        "subject_ranking": [{"table_name": t, "similarity": round(table_sims[t], 3)} for t in ranking[:10]],
+        "subject_ranking": [{"table_name": t, "similarity": round(table_sims[t], 3),
+                             "via": tables_by_name[t].get("matched_text"),
+                             "label": tables_by_name[t].get("label") or tables_by_name[t].get("odoo_label"),
+                             "description": (tables_by_name[t].get("description") or "")[:240]}
+                            for t in by_score[:10]],
+        "subject_table": ranking[0],
+        "subject_by": ("forced" if subject and subject == ranking[0]
+                       else "header" if ranking[0] != by_score[0] else "vectors"),
         "value_matches": [{"table_name": m.table_name, "column_name": m.column_name, "value": m.value}
                           for m in value_matches],
         "value_matches_ignored": [{"table_name": m.table_name, "column_name": m.column_name, "value": m.value}

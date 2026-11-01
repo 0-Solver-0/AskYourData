@@ -66,3 +66,45 @@ def test_column_text_puts_meaning_before_technical_name():
                               "synonyms": "amount due", "notes": "Negative for credit notes"})
     assert text.startswith("Amount Due Signed | amount due | Negative for credit notes")
     assert text.endswith("column amount_residual_signed")
+
+
+def test_enriched_table_is_encoded_as_label_and_each_synonym():
+    from schema_service.text_builders import table_vector_texts
+    table = {"table_name": "sale_order", "label": "Sales orders and quotations",
+             "description": "Customer quotations and confirmed sales orders, one row per order.",
+             "synonyms": "sales order, quotation,  Quote ,quotation, Sales orders and quotations",
+             "odoo_label": "Sales Order", "domain": "sales"}
+    assert table_vector_texts(table, []) == [("label", "Sales orders and quotations"), ("synonym", "sales order"),
+                                             ("synonym", "quotation"), ("synonym", "Quote")]
+    # Synonymes seuls : pas de libellé Odoo ajouté (« Journal Entry » pour account_move)
+    only = {"table_name": "account_move", "synonyms": "vendor bill", "odoo_label": "Journal Entry"}
+    assert table_vector_texts(only, []) == [("synonym", "vendor bill")]
+
+
+def test_table_without_label_or_synonyms_keeps_the_full_card():
+    from schema_service.text_builders import build_table_text, table_vector_texts
+    table = {"table_name": "stock_quant", "odoo_label": "Quants", "description": "Stock on hand."}
+    texts = table_vector_texts(table, [])
+    assert texts == [("card", build_table_text({**table, "description": None}, []))]
+    assert "Stock on hand" not in texts[0][1]                     # description jamais encodée
+
+
+def test_column_with_only_a_note_keeps_its_note_out_of_the_vector():
+    from schema_service.text_builders import column_vector_texts
+    col = {"column_name": "payment_reference", "odoo_label": "Payment Reference",
+           "odoo_help": "The payment reference to set on journal items.",
+           "notes": "Communication text for the payment; not a journal and not an amount."}
+    (source, text), = column_vector_texts(col)
+    assert source == "card" and "Payment Reference" in text and "journal items" in text
+    assert "not a journal" not in text
+
+
+def test_enriched_column_leaves_notes_and_help_out_of_the_vectors():
+    from schema_service.text_builders import build_column_text, column_vector_texts
+    col = {"column_name": "partner_id", "label": None, "odoo_label": "Partner",
+           "synonyms": "vendor of the bill, customer of the invoice",
+           "notes": "Customer on invoices, vendor on bills.", "odoo_help": "Partner", "selection_values": None}
+    assert column_vector_texts(col) == [("label", "Partner"), ("synonym", "vendor of the bill"),
+                                        ("synonym", "customer of the invoice")]
+    bare = {"column_name": "state", "odoo_label": "Status", "selection_values": "draft=Draft"}
+    assert column_vector_texts(bare) == [("card", build_column_text(bare))]

@@ -309,19 +309,19 @@ Les rôles sont nommés d'après ce qu'ils font, pas d'après un modèle : chang
 Chaque fournisseur est décrit une seule fois dans un fichier versionné, `config/llm_providers.yaml` (sans aucune clé) :
 
 ```yaml
-meta_spark:
-  base_url: <URL de l'API Meta>          # [À VÉRIFIER dans la documentation]
-  model: <identifiant API de Muse Spark 1.3>  # nom affiché « Muse Spark 1.3 » ; identifiant exact [À VÉRIFIER]
+meta_spark:                              # vérifié le 29/10 : https://dev.meta.ai/docs/models#muse-spark
+  base_url: https://api.meta.ai/v1
+  model: muse-spark-1.3                  # mode Standard (contenu non utilisé pour l'entraînement)
   api_key_env: META_API_KEY
-  context_tokens: 1000000
-  reasoning: {param: <à vérifier>, value: low}
-  price_per_mtok: {input: 1.25, cached_input: 0.15, output: 4.25}
+  context_tokens: 1048576
+  reasoning: {param: reasoning_effort, default: low}   # minimal…max ; "none" refusé (HTTP 400)
+  price_per_mtok: {input: 1.25, cached_input: 0.15, output: 4.25}   # limites : 3 000 RPM, 4 M TPM
 
 baseten_spark_open:
   base_url: https://inference.baseten.co/v1
   model: meta-models/muse-spark-open-1026     # identifiant imposé pour le hackathon
   api_key_env: BASETEN_API_KEY
-  reasoning: {param: <à vérifier>, value: low} # défaut du modèle : xhigh
+  reasoning: {param: reasoning_effort, default: low}   # testé le 29/10
   price_per_mtok: {input: 1.25, cached_input: 0.15, output: 4.25}
 
 fireworks_glimmer:

@@ -2,9 +2,9 @@
 
 import pytest
 
-from schema_service.embedder import QWEN3_PROMPTS, Embedder, EmbedderConfig, resolve_device
+from schema_service.embedder import Embedder, EmbedderConfig, resolve_device
 
-ENV_KEYS = ("EMBEDDER_MODEL_PATH", "MINILM_MODEL_PATH", "EMBEDDER_DEVICE", "EMBEDDER_DIM",
+ENV_KEYS = ("EMBEDDER_MODEL_PATH", "EMBEDDER_DEVICE", "EMBEDDER_DIM",
             "EMBEDDER_PROMPT_TABLES", "EMBEDDER_PROMPT_COLUMNS", "EMBEDDER_FP16", "EMBEDDER_BATCH_SIZE")
 
 
@@ -14,34 +14,20 @@ def clean_env(monkeypatch):
         monkeypatch.delenv(key, raising=False)
 
 
-def test_default_is_minilm_without_prompts():
+def test_default_is_meta_contriever_without_prompts():
     cfg = EmbedderConfig.from_env()
-    assert cfg.model_path.endswith("all-MiniLM-L6-v2")
-    assert cfg.model_id == "all-MiniLM-L6-v2"
+    assert cfg.model_path.endswith("contriever-msmarco")
+    assert cfg.model_id == "contriever-msmarco"
     assert cfg.prompt_tables == "" and cfg.prompt_columns == ""
     assert cfg.device == "auto" and cfg.dim is None
 
 
-def test_legacy_minilm_variable_is_still_read(monkeypatch):
-    monkeypatch.setenv("MINILM_MODEL_PATH", "/models/custom")
-    assert EmbedderConfig.from_env().model_path == "/models/custom"
-
-
-def test_qwen_gets_its_instructions_and_dimension(monkeypatch):
-    monkeypatch.setenv("EMBEDDER_MODEL_PATH", "/app/models/Qwen3-Embedding-0.6B/")
+def test_model_path_dimension_and_prompts_come_from_the_environment(monkeypatch):
+    monkeypatch.setenv("EMBEDDER_MODEL_PATH", "/app/models/dragon-plus/")
     monkeypatch.setenv("EMBEDDER_DIM", "512")
+    monkeypatch.setenv("EMBEDDER_PROMPT_TABLES", "T:")
     cfg = EmbedderConfig.from_env()
-    assert cfg.prompt_tables == QWEN3_PROMPTS["tables"]
-    assert cfg.prompt_columns.startswith("Instruct: ") and cfg.prompt_columns.endswith("\nQuery:")
-    assert cfg.model_id == "Qwen3-Embedding-0.6B@512"
-
-
-def test_explicit_empty_prompt_overrides_default(monkeypatch):
-    monkeypatch.setenv("EMBEDDER_MODEL_PATH", "/app/models/Qwen3-Embedding-0.6B")
-    monkeypatch.setenv("EMBEDDER_PROMPT_TABLES", "")
-    cfg = EmbedderConfig.from_env()
-    assert cfg.prompt_tables == ""
-    assert cfg.prompt_columns == QWEN3_PROMPTS["columns"]
+    assert cfg.model_id == "dragon-plus@512" and cfg.prompt_tables == "T:" and cfg.prompt_columns == ""
 
 
 def test_unknown_device_is_rejected(monkeypatch):
@@ -70,7 +56,7 @@ class FakeModel:
 
 
 def test_documents_have_no_prompt_and_queries_do():
-    cfg = EmbedderConfig(model_path="/m/Qwen3-Embedding-0.6B", prompt_tables="T:", prompt_columns="C:")
+    cfg = EmbedderConfig(model_path="/m/contriever-msmarco", prompt_tables="T:", prompt_columns="C:")
     model = FakeModel()
     emb = Embedder(cfg, model=model)
     assert emb.embed_documents(["sale_order"]) == [[10.0, 0.5]]
@@ -79,3 +65,46 @@ def test_documents_have_no_prompt_and_queries_do():
     assert [p for _, p in model.calls] == [None, "T:", "C:"]
     assert emb.embed_queries([], "columns") == []
     assert emb.info()["dimension"] == 2 and emb.info()["query_prompts"] is True
+
+
+def test_drama_backend_and_remote_code_come_from_the_environment(monkeypatch):
+    monkeypatch.setenv("EMBEDDER_BACKEND", "drama")
+    monkeypatch.setenv("EMBEDDER_TRUST_REMOTE_CODE", "true")
+    cfg = EmbedderConfig.from_env()
+    assert cfg.backend == "drama" and cfg.trust_remote_code is True
+    monkeypatch.setenv("EMBEDDER_BACKEND", "magic")
+    with pytest.raises(ValueError):
+        EmbedderConfig.from_env()
+    monkeypatch.delenv("EMBEDDER_BACKEND")
+    monkeypatch.delenv("EMBEDDER_TRUST_REMOTE_CODE")
+    cfg = EmbedderConfig.from_env()
+    assert cfg.backend == "sentence_transformers" and cfg.trust_remote_code is False
+
+
+class FakeDrama:
+    """API native de DRAMA : encode_queries / encode_documents(tokenizer, textes, use_nested)."""
+
+    def __init__(self):
+        self.calls = []
+
+    def encode_queries(self, tokenizer, texts, use_nested=False):
+        self.calls.append(("q", tokenizer, list(texts), use_nested))
+        return [[1.0, 0.0, 0.5, 0.25] for _ in texts]
+
+    def encode_documents(self, tokenizer, texts, use_nested=False):
+        self.calls.append(("d", tokenizer, list(texts), use_nested))
+        return [[0.0, 1.0, 0.5, 0.25] for _ in texts]
+
+
+def test_drama_backend_uses_queries_and_documents_encoders():
+    cfg = EmbedderConfig(model_path="/m/drama-base", backend="drama", batch_size=2, prompt_tables="ignored")
+    model = FakeDrama()
+    emb = Embedder(cfg, model=model, tokenizer="TOK")
+    assert emb.embed_queries(["lead source", "unit cost", "vendor"], "columns") == [[1.0, 0.0, 0.5, 0.25]] * 3
+    assert emb.embed_documents(["crm_lead.source_id"]) == [[0.0, 1.0, 0.5, 0.25]]
+    assert [c[0] for c in model.calls] == ["q", "q", "d"]               # lots de 2 : 2 appels pour 3 questions
+    assert all(c[1] == "TOK" and c[3] is False for c in model.calls)
+    assert emb.dimension == 4 and emb.embed_queries([]) == []
+    short = Embedder(EmbedderConfig(model_path="/m/drama-base", backend="drama", dim=2), model=FakeDrama(),
+                     tokenizer="T")
+    assert short.embed_query("x") == [1.0, 0.0]                         # Matryoshka : dimension réduite

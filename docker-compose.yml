@@ -70,10 +70,21 @@ services:
       - ./config:/app/config:ro
     environment:
       # Embedder (voir schema_service/embedder.py) : changer de modèle impose de relancer /index
-      EMBEDDER_MODEL_PATH: /app/models/${EMBEDDER_MODEL:-all-MiniLM-L6-v2}
+      # Modèle ouvert de Meta (facebook/contriever-msmarco), exécuté en local sur CPU
+      EMBEDDER_MODEL_PATH: /app/models/${EMBEDDER_MODEL:-contriever-msmarco}
       EMBEDDER_DEVICE:     ${EMBEDDER_DEVICE:-cpu}
       EMBEDDER_DIM:        ${EMBEDDER_DIM:-}
+      # drama : API native de facebook/drama-base (code du modèle exécuté : EMBEDDER_TRUST_REMOTE_CODE=true)
+      EMBEDDER_BACKEND:            ${EMBEDDER_BACKEND:-sentence_transformers}
+      EMBEDDER_TRUST_REMOTE_CODE:  ${EMBEDDER_TRUST_REMOTE_CODE:-false}
+      EMBEDDER_PROMPT_TABLES:      ${EMBEDDER_PROMPT_TABLES:-}
+      EMBEDDER_PROMPT_COLUMNS:     ${EMBEDDER_PROMPT_COLUMNS:-}
       INDEX_FILTERS_PATH:  /app/config/index_filters.yaml
+      # Seuils de la recherche structurée (échelle de similarité propre à l'embedder : à recalibrer
+      # quand on change de modèle, voir tools/calibrate_search.py)
+      STRUCTURED_MIN_SIMILARITY:  ${STRUCTURED_MIN_SIMILARITY:-0.6}
+      STRUCTURED_TABLE_PIECE_MIN: ${STRUCTURED_TABLE_PIECE_MIN:-0.6}
+      STRUCTURED_SUBJECT_MARGIN:  ${STRUCTURED_SUBJECT_MARGIN:-0.06}
       NL2SQL_DB_HOST:      postgres_nl2sql
       NL2SQL_DB_PORT:      "5432"
       NL2SQL_DB_NAME:      nl2sql
@@ -99,7 +110,7 @@ services:
     deploy:
       resources:
         limits:
-          # MiniLM tient dans 1 Go ; Qwen3-Embedding-0.6B sur CPU demande ~4 Go
+          # Contriever (110M paramètres) tient dans ~2 Go sur CPU
           memory: ${SCHEMA_SERVICE_MEMORY:-4G}
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
@@ -132,6 +143,38 @@ services:
       NL2SQL_DB_USER:      nl2sql
       NL2SQL_DB_PASSWORD:  ${NL2SQL_DB_PASSWORD:-nl2sql}
       SECRET_KEY:          ${SECRET_KEY:-changeme_in_production}
+      # Rôles LLM (profils dans config/llm_providers.yaml) et clés (dans .env uniquement)
+      PREP_PROVIDER:       ${PREP_PROVIDER:-meta_spark}
+      # « -» et non « :- » : une valeur vide dans .env désactive le secours
+      PREP_FALLBACK:       ${PREP_FALLBACK-baseten_spark_open}
+      PREP_REASONING:      ${PREP_REASONING:-}
+      SQL_PROVIDER:        ${SQL_PROVIDER:-meta_spark}
+      SQL_FALLBACK:        ${SQL_FALLBACK-baseten_spark_open}
+      SQL_REASONING:       ${SQL_REASONING:-}
+      META_API_KEY:        ${META_API_KEY:-}
+      BASETEN_API_KEY:     ${BASETEN_API_KEY:-}
+      LOCAL_API_KEY:       ${LOCAL_API_KEY:-}
+      # Juge du sujet (Muse Spark 30B) : appelé si l'écart 1re–2e table est sous ce seuil (0 = jamais)
+      STRUCTURED_JUDGE_GAP: ${STRUCTURED_JUDGE_GAP:-0.05}
+      # Question dictée (profil dans config/llm_providers.yaml, clé META_API_KEY)
+      VOICE_PROVIDER:      ${VOICE_PROVIDER:-}
+      VOICE_LANGUAGES:     ${VOICE_LANGUAGES:-}
+      VOICE_MAX_SECONDS:   ${VOICE_MAX_SECONDS:-}
+      VOICE_SILENCE_MS:    ${VOICE_SILENCE_MS:-}
+      VOICE_NO_SPEECH_MS:  ${VOICE_NO_SPEECH_MS:-}
+      # Test public (voir api_service/access.py) : false en local, true dans docker-compose.prod.yml
+      PUBLIC_MODE:              ${PUBLIC_MODE:-false}
+      ACCESS_DEFAULT_QUOTA:     ${ACCESS_DEFAULT_QUOTA:-20}
+      ACCESS_GLOBAL_BUDGET_USD: ${ACCESS_GLOBAL_BUDGET_USD:-20}
+      ACCESS_MIN_INTERVAL_S:    ${ACCESS_MIN_INTERVAL_S:-5}
+      # Exécution en lecture seule sur la base source (rôle créé par tools/create_readonly_role.py)
+      SOURCE_DB_HOST:      ${SOURCE_DB_HOST:-postgres_odoo}
+      SOURCE_DB_PORT:      ${SOURCE_DB_PORT:-5432}
+      SOURCE_DB_NAME:      ${SOURCE_DB_NAME:-odoo}
+      EXEC_DB_USER:        ${EXEC_DB_USER:-askyourdata}
+      EXEC_DB_PASSWORD:    ${EXEC_DB_PASSWORD:-}
+      EXEC_TIMEOUT_MS:     ${EXEC_TIMEOUT_MS:-10000}
+      EXEC_MAX_COST:       ${EXEC_MAX_COST:-5000000}
       OMP_NUM_THREADS:     "4"
       CUDA_VISIBLE_DEVICES: ""
       TOKENIZERS_PARALLELISM: "false"

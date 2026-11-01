@@ -29,7 +29,7 @@ from psycopg2 import sql
 from .filters import FilterConfig, TableInfo, decide_table, keep_column
 from .odoo_meta import ModelMeta, load_odoo_metadata
 from .search import normalize_text
-from .text_builders import build_column_text, build_table_text
+from .text_builders import column_vector_texts, table_vector_texts
 
 logger = logging.getLogger("schema_service.indexer")
 
@@ -165,20 +165,33 @@ def reindex_table_embeddings(conn, table_id: int, embed: EmbedFn) -> None:
         )
         rel_labels = [r["label"] for r in cur.fetchall()]
 
-    texts = [build_column_text(c) for c in cols] + [build_table_text(table, cols, rel_labels)]
-    vectors = embed(texts)
-    col_vectors, table_vector = vectors[:-1], vectors[-1]
+    # Plusieurs textes par colonne et par table (libellé, puis un par synonyme) : tout en un appel
+    owners: list[tuple[Optional[int], str, str]] = []      # (id de colonne ou None pour la table, source, texte)
+    for c in cols:
+        owners += [(c["id"], source, text) for source, text in column_vector_texts(c)]
+    owners += [(None, source, text) for source, text in table_vector_texts(table, cols, rel_labels)]
+    vectors = embed([text for _, _, text in owners])
+    first: dict[Optional[int], list[float]] = {}
+    for (owner, _, _), vec in zip(owners, vectors):
+        first.setdefault(owner, vec)
 
     with conn.cursor() as cur:
         if cols:
             psycopg2.extras.execute_batch(
                 cur,
                 "UPDATE nl2sql_columns SET embedding = %s::vector WHERE id = %s",
-                [(list(v), c["id"]) for c, v in zip(cols, col_vectors)],
+                [(list(first[c["id"]]), c["id"]) for c in cols if c["id"] in first],
             )
         cur.execute(
             "UPDATE nl2sql_tables SET embedding = %s::vector, indexed_at = NOW() WHERE id = %s",
-            (list(table_vector), table_id),
+            (list(first[None]), table_id),
+        )
+        cur.execute("DELETE FROM nl2sql_vectors WHERE table_id = %s", (table_id,))
+        psycopg2.extras.execute_batch(
+            cur,
+            "INSERT INTO nl2sql_vectors (table_id, column_id, source, text, embedding) "
+            "VALUES (%s, %s, %s, %s, %s::vector)",
+            [(table_id, owner, source, text, list(vec)) for (owner, source, text), vec in zip(owners, vectors)],
         )
     conn.commit()
 

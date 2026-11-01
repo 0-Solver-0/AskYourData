@@ -9,6 +9,7 @@ Endpoints :
   POST /index                   — indexe les tables d'un compte (filtrage, métadonnées Odoo, embeddings)
   GET  /index/report            — tables retenues et exclues (avec raison) pour relecture
   POST /select                  — question → tables (recherche, jointures, références) → schéma compact
+  POST /probe                   — un mot → meilleures tables et colonnes, avec le texte gagnant
   POST /select/structured       — question découpée (sujet, mesures, filtres…) → schéma minimal
   POST /annotate/table          — annoter une table (prioritaire sur l'automatique)
   POST /annotate/column         — annoter une colonne (prioritaire sur l'automatique)
@@ -23,6 +24,7 @@ import logging
 import os
 import sys
 import time
+from typing import Optional
 
 import psycopg2
 import psycopg2.extras
@@ -35,7 +37,7 @@ from .embedder import Embedder, EmbedderConfig
 from .enrichment import export_schema, import_enrichment, list_modules
 from .filters import load_filter_config
 from .indexer import index_account, index_report, reindex_table_embeddings
-from .search_data import column_similarities, load_search_data, vector_ranking
+from .search_data import column_similarities, load_search_data, run_structured, vector_ranking
 from .vector_space import ensure_vector_space, missing_embeddings
 
 # ── Logging ────────────────────────────────────────────────────────────────
@@ -246,84 +248,147 @@ def structured_params() -> structured.StructuredParams:
     )
 
 
+def _run_structured(account_id: int, question: str, sq, params, missing: Optional[list[str]] = None,
+                    subject: Optional[str] = None):
+    conn = get_conn()
+    try:
+        return run_structured(conn, embedder, account_id, question, sq, params, missing, subject)
+    finally:
+        conn.close()
+
+
+def _structured_response(plan: dict, sq, elapsed: float, debug: bool) -> dict:
+    response = {
+        "tables": [{"table_name": t["table_name"], "reason": t["reason"]} for t in plan["tables"]],
+        "columns_display": [f"{t['table_name']}.{c['column_name']}" for t in plan["tables"]
+                            for c in t["columns"] if c["reason"] not in ("primary_key", "join")],
+        "schema_ddl": plan["schema_ddl"],
+        "relations": plan["relations"],
+        "token_estimate": plan["token_estimate"],
+        "elapsed_s": elapsed,
+    }
+    if debug:
+        response["debug"] = {
+            "embedder": embedder.cfg.model_id,
+            "structured": sq.__dict__,
+            "subject_ranking": plan["subject_ranking"],
+            "subject_table": plan.get("subject_table"),
+            "subject_by": plan.get("subject_by"),
+            "pieces": plan["pieces"],
+            "tables": plan["tables"],
+            "value_matches": plan["value_matches"],
+            "value_matches_ignored": plan["value_matches_ignored"],
+        }
+    return response
+
+
+def _parse_structured_request():
+    data = request.get_json(silent=True) or {}
+    account_id = data.get("account_id")
+    if not account_id:
+        raise ValueError("'account_id' obligatoire")
+    sq = structured.StructuredQuestion.from_dict(data.get("structured"))
+    return data, int(account_id), (data.get("question") or "").strip(), sq
+
+
+@app.post("/probe")
+def probe():
+    """
+    Sonde de la recherche, pour les tests à la main : un mot ou une expression → meilleures tables
+    (fiches) et meilleures colonnes, avec le texte (libellé ou synonyme) qui a donné chaque score.
+    Body : {"account_id": 1, "text": "vendor", "limit": 10}
+    """
+    data = request.get_json(silent=True) or {}
+    text = " ".join(str(data.get("text") or "").split())
+    account_id = data.get("account_id")
+    if not account_id or not text:
+        return jsonify({"error": "'account_id' et 'text' obligatoires"}), 400
+    limit = max(1, min(int(data.get("limit") or 10), 50))
+    try:
+        table_vec = embedder.embed_query(text, "tables")
+        column_vec = embedder.embed_query(text, "columns")
+        conn = get_conn()
+        try:
+            tables = vector_ranking(conn, int(account_id), table_vec, limit=limit)
+            with conn.cursor() as cur:
+                cur.execute("SELECT table_name FROM nl2sql_tables WHERE account_id = %s", (int(account_id),))
+                names = [r[0] for r in cur.fetchall()]
+            texts: dict = {}
+            sims = column_similarities(conn, int(account_id), names, [column_vec], texts)
+        finally:
+            conn.close()
+        columns = sorted(sims.items(), key=lambda kv: kv[1][0], reverse=True)[:limit]
+        return jsonify({
+            "text": text, "embedder": embedder.cfg.model_id,
+            "tables": tables,
+            "columns": [{"table_name": t, "column_name": c, "similarity": round(v[0], 3),
+                         "matched": (texts.get((t, c)) or [None])[0]} for (t, c), v in columns],
+        })
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Erreur /probe")
+        return jsonify({"error": str(exc)}), 500
+
+
 @app.post("/select/structured")
 def select_structured():
     """
     Question découpée en morceaux de sens → tables et colonnes → schéma minimal.
-    Body : {"account_id": 1, "question": "… (facultatif)", "debug": false,
+    Body : {"account_id": 1, "question": "… (facultatif)", "debug": false, "subject": "table imposée (facultatif)",
             "structured": {"subject": "...", "measures": [...], "filters": [...],
                            "group_by": [...], "period": "...", "order": "..."}}
     Le sujet est cherché parmi les fiches de tables (consigne « tables »), chaque autre morceau
     parmi les colonnes des tables candidates (consigne « columns »).
     """
-    data       = request.get_json(silent=True) or {}
-    account_id = data.get("account_id")
-    question   = (data.get("question") or "").strip()
-    debug      = bool(data.get("debug", False))
-    if not account_id:
-        return jsonify({"error": "'account_id' obligatoire"}), 400
     try:
-        sq = structured.StructuredQuestion.from_dict(data.get("structured"))
+        data, account_id, question, sq = _parse_structured_request()
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
-
     try:
-        t0     = time.time()
-        params = structured_params()
-        pieces = sq.pieces()
-        subject_vec = embedder.embed_query(sq.subject, "tables")
-        piece_vecs  = embedder.embed_queries([text for _, text in pieces], "columns")
-        # Regroupements comparés aussi aux fiches de tables (« product category » → product_category)
-        group_idx = [i for i, (role, _) in enumerate(pieces) if role == "group_by"]
-        group_vecs = embedder.embed_queries([pieces[i][1] for i in group_idx], "tables") if group_idx else []
-
-        conn = get_conn()
-        try:
-            candidates, tables_by_name, columns_by_table, relations, values = \
-                load_search_data(conn, account_id, subject_vec)
-            if not candidates:
-                return jsonify({"error": "Aucune table indexée — lancez /index d'abord"}), 404
-            table_sims = {c.table_name: c.vector_score for c in candidates}
-            names = sorted(table_sims, key=table_sims.get, reverse=True)[:params.candidate_tables]
-            column_sims = column_similarities(conn, account_id, names, piece_vecs)
-            piece_table_sims: list[dict[str, float]] = [{} for _ in pieces]
-            for i, vec in zip(group_idx, group_vecs):
-                piece_table_sims[i] = {r["table_name"]: r["similarity"]
-                                       for r in vector_ranking(conn, account_id, vec, limit=5)}
-        finally:
-            conn.close()
-
-        value_text = question or " ".join([sq.subject, *sq.filters])
-        value_matches = search.match_values(value_text, values)
-        plan = structured.plan_structured(sq, table_sims, column_sims, tables_by_name, columns_by_table,
-                                          relations, params, value_matches, piece_table_sims)
+        t0 = time.time()
+        plan, _ = _run_structured(account_id, question, sq, structured_params(),
+                                  subject=(data.get("subject") or None))
         elapsed = round(time.time() - t0, 3)
         logger.info("✅ Select structuré en %ss | %d tables | ~%d tokens",
                     elapsed, len(plan["tables"]), plan["token_estimate"])
-
-        response = {
-            "tables": [{"table_name": t["table_name"], "reason": t["reason"]} for t in plan["tables"]],
-            "columns_display": [f"{t['table_name']}.{c['column_name']}" for t in plan["tables"]
-                                for c in t["columns"] if c["reason"] not in ("primary_key", "join")],
-            "schema_ddl": plan["schema_ddl"],
-            "relations": plan["relations"],
-            "token_estimate": plan["token_estimate"],
-            "elapsed_s": elapsed,
-        }
-        if debug:
-            response["debug"] = {
-                "embedder": embedder.cfg.model_id,
-                "structured": sq.__dict__,
-                "subject_ranking": plan["subject_ranking"],
-                "pieces": plan["pieces"],
-                "tables": plan["tables"],
-                "value_matches": plan["value_matches"],
-                "value_matches_ignored": plan["value_matches_ignored"],
-            }
-        return jsonify(response)
-
+        return jsonify(_structured_response(plan, sq, elapsed, bool(data.get("debug"))))
+    except LookupError as exc:
+        return jsonify({"error": str(exc)}), 404
     except Exception as exc:  # noqa: BLE001
         logger.exception("Erreur /select/structured")
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.post("/select/extend")
+def select_extend():
+    """
+    Recherche complémentaire : même requête que /select/structured, plus « missing » (mots métier
+    signalés par le modèle SQL, 5 au plus). Le plan de base est recalculé à l'identique puis complété
+    (colonnes des tables retenues et voisines, sinon tables reliées) ; rien n'est retiré.
+    Body : {"account_id": 1, "question": "...", "structured": {...}, "missing": ["stock value"], "debug": true}
+    Réponse : celle de /select/structured + "missing_report" (pour chaque mot : column | table | null).
+    """
+    try:
+        data, account_id, question, sq = _parse_structured_request()
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    missing = [" ".join(str(m).split()) for m in (data.get("missing") or []) if str(m).strip()]
+    if not missing:
+        return jsonify({"error": "'missing' obligatoire (liste de mots métier)"}), 400
+    try:
+        t0 = time.time()
+        plan, report = _run_structured(account_id, question, sq, structured_params(), missing,
+                                       subject=(data.get("subject") or None))
+        elapsed = round(time.time() - t0, 3)
+        found = sum(1 for r in report if r["found"])
+        logger.info("✅ Extend en %ss | %d/%d mots trouvés | %d tables", elapsed, found, len(report),
+                    len(plan["tables"]))
+        response = _structured_response(plan, sq, elapsed, bool(data.get("debug")))
+        response["missing_report"] = report
+        return jsonify(response)
+    except LookupError as exc:
+        return jsonify({"error": str(exc)}), 404
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Erreur /select/extend")
         return jsonify({"error": str(exc)}), 500
 
 

@@ -72,6 +72,8 @@ ALTER TABLE nl2sql_columns ADD COLUMN IF NOT EXISTS relation_model   VARCHAR(200
 ALTER TABLE nl2sql_columns ADD COLUMN IF NOT EXISTS selection_values TEXT;
 ALTER TABLE nl2sql_columns ADD COLUMN IF NOT EXISTS manual_override  BOOLEAN DEFAULT FALSE;
 ALTER TABLE nl2sql_columns ADD COLUMN IF NOT EXISTS embedding        vector(384);
+-- v7 : colonne toujours envoyée quand sa table est retenue (statut, type de document…)
+ALTER TABLE nl2sql_columns ADD COLUMN IF NOT EXISTS always_include   BOOLEAN DEFAULT FALSE;
 
 -- ── Relations (clés étrangères) ───────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS nl2sql_relations (
@@ -114,6 +116,21 @@ CREATE TABLE IF NOT EXISTS nl2sql_meta (
     value      TEXT,
     updated_at TIMESTAMP DEFAULT NOW()
 );
+
+-- v8 : plusieurs vecteurs par table et par colonne (libellé, puis un par synonyme) ;
+-- le score d'une table ou d'une colonne est le meilleur de ses vecteurs.
+-- column_id NULL : vecteur de la table elle-même. source : label | synonym | card (fiche de secours).
+-- La colonne embedding de nl2sql_tables / nl2sql_columns garde le premier vecteur (secours).
+CREATE TABLE IF NOT EXISTS nl2sql_vectors (
+    id         SERIAL PRIMARY KEY,
+    table_id   INT NOT NULL REFERENCES nl2sql_tables(id) ON DELETE CASCADE,
+    column_id  INT REFERENCES nl2sql_columns(id) ON DELETE CASCADE,
+    source     VARCHAR(20) NOT NULL,
+    text       TEXT NOT NULL,
+    embedding  vector(384)
+);
+CREATE INDEX IF NOT EXISTS idx_nl2sql_vectors_table  ON nl2sql_vectors(table_id) WHERE column_id IS NULL;
+CREATE INDEX IF NOT EXISTS idx_nl2sql_vectors_column ON nl2sql_vectors(column_id);
 
 -- ── Index ─────────────────────────────────────────────────────────────────────
 CREATE INDEX IF NOT EXISTS idx_nl2sql_tables_embedding

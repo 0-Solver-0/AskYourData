@@ -383,7 +383,15 @@ def test_enrichment_export_import_roundtrip(dbs):
         cur.execute("""SELECT embedding FROM nl2sql_tables WHERE account_id = %s AND table_name = 'sale_order'""",
                     (account["id"],))
         after = cur.fetchone()[0]
-    assert str(before) != str(after)                                         # fiche réencodée
+        cur.execute("""SELECT v.source, v.text FROM nl2sql_vectors v JOIN nl2sql_tables t ON t.id = v.table_id
+                       WHERE t.account_id = %s AND t.table_name = 'sale_order' AND v.column_id IS NULL
+                       ORDER BY v.id""", (account["id"],))
+        table_texts = cur.fetchall()
+    # Fiche réencodée : le libellé (inchangé, « Orders ») puis un vecteur par nouveau synonyme
+    # (« orders » = le libellé, non répété) ; la description n'est pas encodée
+    assert str(before) == str(after)                                         # premier vecteur = libellé
+    assert table_texts == [("label", "Orders"), ("synonym", "quotations"), ("synonym", "sales")]
+    assert not any("Customer quotations" in t for _, t in table_texts)
 
     # Réimporter le même fichier ne change rien ; une réindexation ne l'écrase pas
     assert import_enrichment(nl, account["id"], filled)["fields_changed"] == 0
@@ -439,3 +447,175 @@ def test_column_similarities_per_piece(dbs):
     assert all(len(v) == 2 for v in sims.values())
     assert sims[("sale_order", "amount_total")][1] == pytest.approx(1.0, abs=1e-5)
     assert column_similarities(nl, account["id"], [], [other]) == {}
+
+
+def test_always_include_is_imported_without_reencoding(dbs):
+    import copy
+
+    from schema_service.enrichment import export_schema, import_enrichment
+    from schema_service.search_data import load_search_data
+
+    src, nl, account = dbs
+    index_account(nl, src, account, fake_embed, load_filter_config(CONFIG_PATH))
+    data = export_schema(nl, account["id"], tables=["sale_order"])
+    state = next(c for c in data["tables"][0]["columns"] if c["column_name"] == "state")
+    assert state["enrich"]["always_include"] is False
+
+    filled = copy.deepcopy(data)
+    next(c for c in filled["tables"][0]["columns"] if c["column_name"] == "state")["enrich"]["always_include"] = True
+    report = import_enrichment(nl, account["id"], filled)
+    assert report["tables_changed"] == ["sale_order"] and report["fields_changed"] == 1
+    assert report["changed_table_ids"] == []                       # rien à réencoder
+
+    _, _, columns_by_table, _, _ = load_search_data(nl, account["id"], fake_embed(["sales orders"])[0])
+    flags = {c["column_name"]: c["always_include"] for c in columns_by_table["sale_order"]}
+    assert flags["state"] is True and flags["amount_total"] is False
+
+    # Une réindexation ne l'efface pas ; une valeur invalide est refusée
+    index_account(nl, src, account, fake_embed, load_filter_config(CONFIG_PATH))
+    again = export_schema(nl, account["id"], tables=["sale_order"])["tables"][0]
+    assert next(c for c in again["columns"] if c["column_name"] == "state")["enrich"]["always_include"] is True
+    next(c for c in filled["tables"][0]["columns"] if c["column_name"] == "state")["enrich"]["always_include"] = "maybe"
+    with pytest.raises(ValueError):
+        import_enrichment(nl, account["id"], filled, dry_run=True)
+    nl.rollback()
+
+
+def test_extend_adds_the_missing_column_to_the_plan(dbs):
+    """Recherche complémentaire sur la vraie base : le mot manquant ajoute sa colonne, rien n'est retiré."""
+    from schema_service import structured
+    from schema_service.search_data import run_structured
+
+    src, nl, account = dbs
+    index_account(nl, src, account, fake_embed, load_filter_config(CONFIG_PATH))
+
+    def stored(sql, params):
+        with nl.cursor() as cur:
+            cur.execute(sql, params)
+            vec = cur.fetchone()[0]
+        return vec.to_list() if hasattr(vec, "to_list") else [float(x) for x in vec]
+
+    table_vec = stored("SELECT embedding FROM nl2sql_tables WHERE account_id = %s AND table_name = 'sale_order'",
+                       (account["id"],))
+    amount_vec = stored("""SELECT c.embedding FROM nl2sql_columns c JOIN nl2sql_tables t ON t.id = c.table_id
+                           WHERE t.account_id = %s AND t.table_name = 'sale_order' AND c.column_name = 'amount_total'""",
+                        (account["id"],))
+
+    class FakeEmbedder:
+        def embed_query(self, text, kind="tables"):
+            return table_vec if text == "sales orders" else fake_embed([text])[0]
+
+        def embed_queries(self, texts, kind="tables"):
+            return [amount_vec if t == "order total amount" else self.embed_query(t, kind) for t in texts]
+
+    sq = structured.StructuredQuestion.from_dict({"subject": "sales orders"})
+    params = structured.StructuredParams()
+    base, report = run_structured(nl, FakeEmbedder(), account["id"], "Average order value", sq, params)
+    assert report == [] and base["tables"][0]["table_name"] == "sale_order"
+    base_cols = {c["column_name"] for c in base["tables"][0]["columns"]}
+    assert "amount_total" not in base_cols
+
+    plan, report = run_structured(nl, FakeEmbedder(), account["id"], "Average order value", sq, params,
+                                  missing=["order total amount"])
+    assert report[0]["found"] == "column" and (report[0]["table"], report[0]["column"]) == ("sale_order", "amount_total")
+    cols = {c["column_name"] for c in plan["tables"][0]["columns"]}
+    assert "amount_total" in cols and base_cols <= cols
+    assert {t["table_name"] for t in base["tables"]} <= {t["table_name"] for t in plan["tables"]}
+
+
+def test_multi_vectors_score_by_best_synonym(dbs):
+    """Une table et une colonne enrichies : un vecteur par libellé et par synonyme, score = le meilleur."""
+    from schema_service.search_data import column_similarities, vector_ranking
+    from schema_service.vector_space import missing_embeddings
+
+    src, nl, account = dbs
+    index_account(nl, src, account, fake_embed, load_filter_config(CONFIG_PATH))
+    with nl.cursor() as cur:
+        cur.execute("""UPDATE nl2sql_tables SET label = 'Sales orders', synonyms = 'quotation, customer order',
+                       manual_override = TRUE WHERE account_id = %s AND table_name = 'sale_order' RETURNING id""",
+                    (account["id"],))
+        so_id = cur.fetchone()[0]
+        cur.execute("""UPDATE nl2sql_columns SET label = 'Customer', synonyms = 'client, buyer', manual_override = TRUE
+                       WHERE table_id = %s AND column_name = 'partner_id'""", (so_id,))
+    nl.commit()
+    reindex_table_embeddings(nl, so_id, fake_embed)
+    assert missing_embeddings(nl) == 0
+
+    top = vector_ranking(nl, account["id"], fake_embed(["customer order"])[0], limit=3)[0]
+    assert top == {"table_name": "sale_order", "similarity": 1.0, "matched": "customer order"}
+
+    texts: dict = {}
+    sims = column_similarities(nl, account["id"], ["sale_order"], fake_embed(["buyer", "Customer"]), texts)
+    assert sims[("sale_order", "partner_id")] == pytest.approx([1.0, 1.0])
+    assert texts[("sale_order", "partner_id")] == ["buyer", "Customer"]
+    # Colonne non enrichie : une seule fiche complète (texte gagnant = la fiche)
+    assert texts[("sale_order", "state")][0].startswith("Status")
+
+
+def test_search_falls_back_to_single_vectors_before_reindex(dbs):
+    """Index d'avant la v8 (aucun vecteur multiple) : la recherche utilise le vecteur unique ; /index requis."""
+    from schema_service.search_data import column_similarities, vector_ranking
+    from schema_service.vector_space import missing_embeddings
+
+    src, nl, account = dbs
+    index_account(nl, src, account, fake_embed, load_filter_config(CONFIG_PATH))
+    with nl.cursor() as cur:
+        cur.execute("DELETE FROM nl2sql_vectors")
+        cur.execute("""SELECT t.embedding, c.embedding FROM nl2sql_tables t JOIN nl2sql_columns c ON c.table_id = t.id
+                       WHERE t.account_id = %s AND t.table_name = 'sale_order' AND c.column_name = 'amount_total'""",
+                    (account["id"],))
+        table_vec, col_vec = [[float(x) for x in (v.to_list() if hasattr(v, "to_list") else v)]
+                              for v in cur.fetchone()]
+    nl.commit()
+    assert missing_embeddings(nl) > 0
+    top = vector_ranking(nl, account["id"], table_vec, limit=1)[0]
+    assert (top["table_name"], top["matched"]) == ("sale_order", None)
+    sims = column_similarities(nl, account["id"], ["sale_order"], [col_vec])
+    assert sims[("sale_order", "amount_total")][0] == pytest.approx(1.0)
+    index_account(nl, src, account, fake_embed, load_filter_config(CONFIG_PATH))
+    assert missing_embeddings(nl) == 0
+
+
+def test_entity_piece_takes_the_subject_foreign_key(dbs):
+    """« by customer » rattaché à l'entité customer : la clé sale_order.partner_id, même si une autre
+    colonne ressemble davantage au mot."""
+    from schema_service import structured
+    from schema_service.search_data import run_structured
+
+    src, nl, account = dbs
+    index_account(nl, src, account, fake_embed, load_filter_config(CONFIG_PATH))
+    with nl.cursor() as cur:
+        for table, label in (("sale_order", "Sales orders"), ("res_partner", "Contacts")):
+            cur.execute("""UPDATE nl2sql_tables SET label = %s, synonyms = %s, manual_override = TRUE
+                           WHERE account_id = %s AND table_name = %s RETURNING id""",
+                        (label, "customer" if table == "res_partner" else "sales order", account["id"], table))
+            table_id = cur.fetchone()[0]
+            nl.commit()
+            reindex_table_embeddings(nl, table_id, fake_embed)
+        # Une colonne du sujet porte exactement le mot « customer » (piège) : elle ne doit pas gagner
+        cur.execute("""UPDATE nl2sql_columns SET label = 'customer', manual_override = TRUE
+                       WHERE column_name = 'state' AND table_id = (SELECT id FROM nl2sql_tables
+                       WHERE account_id = %s AND table_name = 'sale_order') RETURNING table_id""", (account["id"],))
+        so_id = cur.fetchone()[0]
+    nl.commit()
+    reindex_table_embeddings(nl, so_id, fake_embed)
+
+    class Embedder:
+        def embed_query(self, text, kind="tables"):
+            return fake_embed([text])[0]
+
+        def embed_queries(self, texts, kind="tables"):
+            return fake_embed(list(texts))
+
+    params = structured.StructuredParams(min_similarity=0.5, table_piece_min=0.5)
+    plain = structured.StructuredQuestion.from_dict({"subject": "sales order", "group_by": ["customer"]})
+    plan, _ = run_structured(nl, Embedder(), account["id"], "", plain, params)
+    assert plan["pieces"][0]["matches"][0]["column"] == "state"            # sans entité : le mot seul
+
+    sq = structured.StructuredQuestion.from_dict({"subject": "sales order", "group_by": ["customer"],
+                                                  "entities": {"customer": "customer"}})
+    plan, _ = run_structured(nl, Embedder(), account["id"], "", sq, params)
+    piece = plan["pieces"][0]
+    assert piece["entity"]["table"] == "res_partner" and piece["entity"]["rule"] == "fk"
+    assert piece["matches"][0]["column"] == "partner_id"
+    assert "res_partner" in {t["table_name"] for t in plan["tables"]}

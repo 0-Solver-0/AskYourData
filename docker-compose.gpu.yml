@@ -1,6 +1,6 @@
 # ══════════════════════════════════════════════════════════════════════════════
 #  AskYourData — docker-compose.gpu.yml (option)
-#  Donne un GPU NVIDIA à schema_service pour l'embedder (Qwen3-Embedding, reranker…).
+#  Donne un GPU NVIDIA à schema_service pour l'embedder (facultatif : Contriever tourne bien sur CPU).
 #
 #  docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build
 #

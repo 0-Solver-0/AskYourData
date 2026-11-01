@@ -4,7 +4,7 @@ schema_service/text_builders.py
 Construction des textes encodés en vecteurs (tables et colonnes).
 
 Fonctions pures, testables sans modèle ni base.
-L'embedder tronque les textes longs (~256 tokens pour all-MiniLM-L6-v2) : les
+L'embedder tronque les textes longs (512 tokens pour Contriever) : les
 informations les plus utiles (libellés, description) sont donc placées en tête.
 """
 
@@ -118,3 +118,62 @@ def build_table_text(table: dict, columns: list[dict], relation_labels: Iterable
     if rel:
         parts.append("relations: " + ", ".join(rel))
     return " | ".join(parts)
+
+
+# ── Plusieurs vecteurs par table et par colonne ──────────────────────────────
+# Une fiche qui mêle plusieurs sens donne un vecteur moyen : une carte plus étroite d'une autre
+# table passe devant. Une table ou une colonne enrichie est donc encodée en plusieurs textes
+# courts — son libellé, puis chaque synonyme — et son score est le meilleur d'entre eux.
+# La description, les notes, l'aide Odoo et les valeurs ne sont pas encodées : elles servent au
+# DDL envoyé au modèle SQL. Sans libellé ni synonymes, la fiche complète d'avant sert de secours.
+
+VectorText = tuple[str, str]   # (source : label | synonym | card, texte)
+
+
+def split_synonyms(value: Optional[str]) -> list[str]:
+    """'sales order, quotation ,, quote' → ['sales order', 'quotation', 'quote'] (doublons retirés)."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for part in (value or "").replace(";", ",").split(","):
+        text = _clean(part)
+        if text and text.lower() not in seen:
+            seen.add(text.lower())
+            out.append(text)
+    return out
+
+
+def _label_and_synonyms(label: str, synonyms: list[str]) -> list[VectorText]:
+    texts: list[VectorText] = [("label", label)] if label else []
+    seen = {label.lower()} if label else set()
+    for s in synonyms:
+        if s.lower() not in seen:
+            seen.add(s.lower())
+            texts.append(("synonym", s))
+    return texts
+
+
+def table_vector_texts(table: dict, columns: list[dict], relation_labels: Iterable[str] = ()) -> list[VectorText]:
+    """
+    Textes encodés pour une table. Enrichie (libellé ou synonymes) : le libellé métier, puis un
+    texte par synonyme. Sinon : la fiche complète (libellé Odoo, nom, colonnes parlantes), sans description.
+    """
+    label = _clean(table.get("label"))
+    synonyms = split_synonyms(table.get("synonyms"))
+    if label or synonyms:
+        return _label_and_synonyms(label, synonyms)
+    # La description n'est jamais encodée (DDL seulement), même dans la fiche de secours
+    return [("card", build_table_text({**table, "description": None}, columns, relation_labels))]
+
+
+def column_vector_texts(col: dict) -> list[VectorText]:
+    """
+    Textes encodés pour une colonne. Enrichie (libellé ou synonymes) : son libellé (manuel, sinon
+    Odoo, sinon le nom lisible), puis un texte par synonyme. Sinon : la fiche complète, sans les notes
+    (libellé et aide Odoo, valeurs).
+    """
+    synonyms = split_synonyms(col.get("synonyms"))
+    if _clean(col.get("label")) or synonyms:
+        return _label_and_synonyms(column_display_label(col), synonyms)
+    # Les notes ne sont jamais encodées (DDL seulement), même dans la fiche de secours : une note
+    # « not a journal » attirait la recherche « payment journal »
+    return [("card", build_column_text({**col, "notes": None}))]

@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>AskYourData</title>
+  <meta name="description" content="Ask a business question about your Odoo data, typed or spoken, and get the answer straight from the database.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="bar">
+    <a class="wordmark" href="/">Ask<span>Your</span>Data</a>
+    <div class="source" id="source" aria-live="polite">Connecting…</div>
+  </header>
+
+  <main>
+    <section class="ask" aria-labelledby="ask-title">
+      <h1 id="ask-title">What do you want to know?</h1>
+      <p class="lede">Ask in plain words about sales, invoices, purchases, stock, leads or employees. The answer comes straight from your Odoo database, with the query that produced it.</p>
+
+      <form id="ask-form" class="ask-box" autocomplete="off">
+        <label class="visually-hidden" for="question">Your question</label>
+        <textarea id="question" name="question" rows="2" maxlength="500"
+          placeholder="Top 5 customers by revenue this year"></textarea>
+        <div class="ask-actions">
+          <button type="button" id="mic" class="mic" aria-pressed="false" title="Ask by voice">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15a3 3 0 0 0 3-3V6a3 3 0 1 0-6 0v6a3 3 0 0 0 3 3Zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-2.08A7 7 0 0 0 19 12h-2Z"/></svg>
+            <span class="visually-hidden" id="mic-label">Start speaking</span>
+          </button>
+          <button type="submit" id="send" class="send">Ask</button>
+        </div>
+      </form>
+      <p class="voice-state" id="voice-state" aria-live="polite" hidden></p>
+
+      <div class="examples" aria-label="Example questions">
+        <button type="button">Top 10 products by sales revenue this year</button>
+        <button type="button">Overdue vendor bills by vendor</button>
+        <button type="button">Stock value by product category</button>
+        <button type="button">Leads created this month by source</button>
+        <button type="button">Employees by job position and manager</button>
+      </div>
+    </section>
+
+    <section id="answers" class="answers" aria-label="Answers"></section>
+  </main>
+
+  <template id="answer-template">
+    <article class="answer">
+      <header class="answer-head">
+        <h2 class="answer-question"></h2>
+        <span class="answer-origin"></span>
+      </header>
+      <div class="answer-body">
+        <p class="working"><span class="pulse" aria-hidden="true"></span><span class="working-text">Reading your question</span> <span class="working-time"></span></p>
+      </div>
+      <div class="trace" hidden>
+        <div class="trace-bar" role="img"></div>
+        <ol class="trace-steps"></ol>
+        <dl class="trace-totals"></dl>
+      </div>
+      <details class="how" hidden>
+        <summary>How this answer was built</summary>
+        <div class="how-body"></div>
+      </details>
+    </article>
+  </template>
+
+  <script src="/static/voice-guard.js"></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>

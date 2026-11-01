@@ -345,6 +345,80 @@
         },
         "url": "{{base_url}}/api/v1/schema/structured"
       }
+    },
+    {
+      "name": "16. LLM — profils par rôle (sans appel)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{base_url}}/api/v1/llm"
+      }
+    },
+    {
+      "name": "17. LLM — test du rôle prep (appel réel)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"role\": \"prep\",\n  \"prompt\": \"Reply with the single word OK.\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": "{{base_url}}/api/v1/llm/test"
+      }
+    },
+    {
+      "name": "18. LLM — test du rôle sql (appel réel)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"role\": \"sql\",\n  \"prompt\": \"Reply with the single word OK.\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": "{{base_url}}/api/v1/llm/test"
+      }
+    },
+    {
+      "name": "19. PREP — découpage + schéma (top customers)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"question\": \"Top 5 customers by revenue this year\",\n  \"account_id\": {{account_id}}\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": "{{base_url}}/api/v1/structure"
+      }
     }
   ]
 }
