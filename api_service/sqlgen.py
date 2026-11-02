@@ -28,7 +28,8 @@ MAX_TOKENS = 6000            # requête + raisonnement
 
 # « Employees by job position and manager » : des regroupements sans mesure se lisaient tantôt
 # « compter par groupe », tantôt « lister les fiches triées ». Sauf si la question demande une liste,
-# on fixe la lecture : une ligne par groupe, avec le nombre de fiches.
+# on fixe la lecture : une ligne par groupe, avec le nombre de fiches et, pour des documents qui portent
+# un montant (paiements, factures, commandes), la somme du montant (« Payments … by journal » → total).
 LIST_WORDS = re.compile(r"\b(list|lists|listing|names?|each|every|all)\b", re.I)
 
 
@@ -38,8 +39,9 @@ def grouping_reading(question: str, pieces: dict) -> Optional[str]:
     if not group_by or pieces.get("measures") or LIST_WORDS.search(question or ""):
         return None
     subject = pieces.get("subject") or "record"
-    return (f"Grouped by {', '.join(group_by)} with no measure: return one row per group with the number of "
-            f"{subject} records (COUNT), not the list of records.")
+    return (f"Grouped by {', '.join(group_by)} with no measure: return one row per group, not the list of "
+            f"records: the number of {subject} records (COUNT) and, when these records carry an amount "
+            f"(payments, invoices, bills, orders), the sum of their main amount for the question.")
 
 
 def build_user_message(question: str, structured: Optional[dict], schema_ddl: str,

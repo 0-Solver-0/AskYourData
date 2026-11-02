@@ -33,8 +33,8 @@ def test_prompt_and_user_message():
 def test_grouping_without_a_measure_means_one_row_per_group():
     by_job = {"subject": "employee", "group_by": ["job position", "manager"]}
     msg = sqlgen.build_user_message("Employees by job position and manager", by_job, DDL)
-    assert ("Grouped by job position, manager with no measure: return one row per group with the number of "
-            "employee records (COUNT)") in msg
+    assert ("Grouped by job position, manager with no measure: return one row per group, not the list of records: "
+            "the number of employee records (COUNT) and, when these records carry an amount") in msg
     # Une mesure est demandée, ou la question demande une liste : rien n'est ajouté
     with_measure = {**by_job, "measures": ["salary"]}
     assert "Grouped by" not in sqlgen.build_user_message("Salary by job position", with_measure, DDL)
