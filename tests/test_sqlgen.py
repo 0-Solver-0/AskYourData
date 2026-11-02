@@ -30,6 +30,18 @@ def test_prompt_and_user_message():
     assert 'You asked for: ["stock value"]' in again
 
 
+def test_grouping_without_a_measure_means_one_row_per_group():
+    by_job = {"subject": "employee", "group_by": ["job position", "manager"]}
+    msg = sqlgen.build_user_message("Employees by job position and manager", by_job, DDL)
+    assert ("Grouped by job position, manager with no measure: return one row per group with the number of "
+            "employee records (COUNT)") in msg
+    # Une mesure est demandée, ou la question demande une liste : rien n'est ajouté
+    with_measure = {**by_job, "measures": ["salary"]}
+    assert "Grouped by" not in sqlgen.build_user_message("Salary by job position", with_measure, DDL)
+    assert "Grouped by" not in sqlgen.build_user_message("List employees by job position", by_job, DDL)
+    assert "Grouped by" not in sqlgen.build_user_message("Top 5 customers", {"subject": "sales order"}, DDL)
+
+
 def test_answers_are_parsed():
     assert sqlgen.parse_answer("<sql>\nSELECT 1;\n</sql>") == {"status": "sql", "sql": "SELECT 1",
                                                               "missing": [], "reason": None}
