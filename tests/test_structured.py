@@ -659,3 +659,33 @@ def test_always_included_key_brings_its_target_table_and_its_always_included_col
     assert names(plan)["stock_location"] == "always-key:stock_quant.location_id"
     assert {"usage", "id"} <= columns(plan, "stock_location") and "barcode" not in columns(plan, "stock_location")
     assert "FOREIGN KEY (location_id) REFERENCES stock_location(id)" in plan["schema_ddl"]
+
+
+def test_table_whose_reason_becomes_missing_still_gets_its_name():
+    # « Least profitable product » : à l'essai 1, product_product arrive par la clé de la ligne et son nom est
+    # pris sur product_template. À l'essai 2, product_product porte aussi le coût demandé (standard_price) :
+    # sa raison devient « missing:… » et le nom du produit ne doit pas disparaître pour autant.
+    from tests.test_search import col
+    tables, cols, rels = sales_world()
+    cols["product_product"] = cols["product_product"] + [col("standard_price", "jsonb", "Cost", odoo_type="float")]
+    sq = structured.StructuredQuestion.from_dict({"subject": "sales order", "measures": ["profit"],
+                                                  "group_by": ["product"], "entities": {"product": "product"}})
+    texts = [t for _, t in sq.pieces()]
+    sims = {(t, c["column_name"]): [0.1] * len(texts) for t, cs in cols.items() for c in cs}
+    sims[("sale_order_line", "product_id")] = [0.8 if x == "product" else 0.1 for x in texts]
+    ents = [{"entity": "product", "table": "product_product", "similarity": 0.8} if x == "product" else None
+            for x in texts]
+    table_sims = {"sale_order": 0.7, "sale_order_line": 0.6}
+
+    def plan(extra=None):
+        return structured.plan_structured(sq, table_sims, sims, tables, cols, rels, structured.StructuredParams(),
+                                          None, None, extra_columns=extra, piece_entities=ents)
+
+    first = plan()
+    assert "product_template" in names(first) and "name" in columns(first, "product_template")
+    second = plan({("product_product", "standard_price"): "product unit cost"})
+    assert names(second)["product_product"].startswith("missing:")
+    assert "standard_price" in columns(second, "product_product")
+    assert "product_template" in names(second) and "name" in columns(second, "product_template")
+    assert "FOREIGN KEY (product_tmpl_id) REFERENCES product_template(id)" in second["schema_ddl"]
+    assert set(names(first)) <= set(names(second))                           # rien n'est retiré

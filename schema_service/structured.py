@@ -702,9 +702,11 @@ def plan_structured(sq: StructuredQuestion, table_sims: dict[str, float],
     for m in value_matches:
         reasons.setdefault(m.table_name, f"value:{m.table_name}.{m.column_name}")
         matched_cols.setdefault(m.table_name, set()).add(m.column_name)
-    # Toute table ajoutée pour relier ou regrouper (jointure, regroupement, valeur) doit aussi
-    # pouvoir afficher un nom : res_users arrivée par une jointure → res_partner.
-    for target in [t for t, why in reasons.items() if why.startswith(("join:", "group_by-table:", "value:"))]:
+    # Toute table ajoutée pour relier, regrouper ou compléter (jointure, regroupement, valeur, entité,
+    # clé toujours envoyée, mot manquant) doit aussi pouvoir afficher un nom : res_users arrivée par une
+    # jointure → res_partner ; product_product qui porte le coût demandé à l'essai 2 → product_template.
+    for target in [t for t, why in reasons.items()
+                   if why.startswith(("join:", "group_by-table:", "value:", "entity:", "always-key:", "missing"))]:
         add_name_hop(target)
     core = [t for t, why in reasons.items() if not why.startswith(("lookup:", "name:"))]
     used += [r for r in pick_join_relations(relations, set(core), columns_by_table) if r not in used]
