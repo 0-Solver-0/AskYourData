@@ -47,6 +47,23 @@ def test_valid_queries_pass_and_get_a_limit():
     assert ok("SELECT count(*) FILTER (WHERE so.state = 'sale') AS n FROM sale_order so")["ok"]
 
 
+def test_descending_sorts_put_empty_values_last():
+    # « Profit margin by product » : un produit sans coût (profit NULL) sortait premier d'un tri DESC
+    sql = ("SELECT p.name AS customer, SUM(so.amount_total) AS total_revenue FROM sale_order so "
+           "JOIN res_partner p ON p.id = so.partner_id GROUP BY p.name ORDER BY total_revenue DESC, p.name")
+    assert ok(sql)["sql"] == sql.replace("DESC,", "DESC NULLS LAST,") + "\nLIMIT 1000"
+    window = ("SELECT p.name, ROW_NUMBER() OVER (ORDER BY so.amount_total DESC) AS rk FROM sale_order so "
+              "JOIN res_partner p ON p.id = so.partner_id ORDER BY rk")
+    assert "OVER (ORDER BY so.amount_total DESC NULLS LAST)" in ok(window)["sql"]
+    # Déjà choisi par le modèle, tri croissant, ou « desc » dans une chaîne : rien ne change
+    chosen = "SELECT p.name FROM res_partner p ORDER BY p.name DESC NULLS FIRST"
+    assert ok(chosen)["sql"] == chosen + "\nLIMIT 1000"
+    asc = "SELECT p.name FROM res_partner p ORDER BY p.name"
+    assert ok(asc)["sql"] == asc + "\nLIMIT 1000"
+    text = "SELECT p.name FROM res_partner p WHERE p.name = 'DESC' ORDER BY p.name DESC"
+    assert ok(text)["sql"] == "SELECT p.name FROM res_partner p WHERE p.name = 'DESC' ORDER BY p.name DESC NULLS LAST\nLIMIT 1000"
+
+
 def test_writes_and_tricks_are_refused():
     for sql, word in (("DELETE FROM sale_order", "only SELECT"),
                       ("WITH d AS (DELETE FROM sale_order RETURNING id) SELECT id FROM d", "DELETE"),
@@ -104,7 +121,8 @@ def test_ask_executes_and_answers():
     c = client((200, ok_body(text=json.dumps(PREP_OK)), ""), (200, ok_body(text=f"<sql>{GOOD}</sql>"), ""))
     run = fake_execute(ROWS)
     out = pipeline.ask(c, schema_fn, run, "Top 5 customers by revenue", 1)
-    assert out["status"] == "ok" and out["executed_sql"] == GOOD and run.calls == [GOOD]
+    ran = GOOD.replace("DESC LIMIT", "DESC NULLS LAST LIMIT")          # valeurs vides en fin de tri
+    assert out["status"] == "ok" and out["executed_sql"] == ran and run.calls == [ran]
     assert out["answer"]["rows"] == [["Azure Interior", 9800]]
     assert out["answer"]["summary"] == "1 result: Customer Azure Interior, Total revenue 9,800."
     assert {"validation", "execution", "total"} <= set(out["timings_ms"])
