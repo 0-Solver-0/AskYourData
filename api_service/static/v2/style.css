@@ -341,3 +341,4 @@ body.needs-key .composer, body.needs-key .examples, body.needs-key .voice-state 
   font-size: 13px; white-space: nowrap; color: var(--action-text); background: var(--you-bg);
   border-radius: var(--radius-pill); padding: 3px 10px;
 }
+.remaining strong { font-weight: 700; font-variant-numeric: tabular-nums; }
