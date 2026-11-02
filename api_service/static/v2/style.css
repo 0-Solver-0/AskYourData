@@ -120,10 +120,12 @@ body:not(.is-empty) .welcome { display: none; }
 .welcome { text-align: center; padding-bottom: 4px; }
 .welcome h1 {
   margin: 0; font-weight: 500; letter-spacing: -0.03em; line-height: 1.12;
-  font-size: clamp(30px, 5vw, 46px);
+  font-size: clamp(28px, 4.6vw, 42px); text-wrap: balance;
 }
+/* « Hello. » seul sur la première ligne, un peu plus grand ; la question sur la deuxième */
 .welcome .hello {
-  font-weight: 600;
+  display: block; width: fit-content; margin: 0 auto 6px;
+  font-size: 1.25em; font-weight: 600;
   background: linear-gradient(90deg, var(--action), var(--action-soft));
   -webkit-background-clip: text; background-clip: text; color: transparent;
 }
