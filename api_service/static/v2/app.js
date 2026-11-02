@@ -256,7 +256,7 @@
   examples.querySelectorAll("button").forEach((b) => b.addEventListener("click", () => {
     examples.classList.remove("open");
     moreBtn.setAttribute("aria-expanded", "false");
-    ask(b.textContent, { origin: "Example" });
+    ask(b.dataset.q || b.textContent, { origin: "Example" });
   }));
 
   function setBusy(state) {
