@@ -60,6 +60,8 @@ COPY schema_service/ ./schema_service/
 COPY api_service/    ./api_service/
 COPY config/         ./config/
 COPY prompts/        ./prompts/
+# Outils d'exploitation lancés dans le conteneur (tools/keys.py : clés du test public)
+COPY tools/          ./tools/
 
 ENV PYTHONPATH=/app \
     OMP_NUM_THREADS=8 \
