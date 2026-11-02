@@ -119,7 +119,11 @@
   function showRemaining(info) {
     if (!info || info.remaining == null) return;
     remainingEl.hidden = false;
-    remainingEl.textContent = `${info.remaining} ${info.remaining === 1 ? "question" : "questions"} left`;
+    // Dans la barre du haut (toujours visible) : « Remaining: 17 »
+    const n = document.createElement("strong");
+    n.textContent = String(info.remaining);
+    remainingEl.replaceChildren("Remaining: ", n);
+    remainingEl.title = `${info.remaining} ${info.remaining === 1 ? "question" : "questions"} left on your key`;
   }
 
   function needKey(message) {
@@ -256,7 +260,7 @@
   examples.querySelectorAll("button").forEach((b) => b.addEventListener("click", () => {
     examples.classList.remove("open");
     moreBtn.setAttribute("aria-expanded", "false");
-    ask(b.textContent, { origin: "Example" });
+    ask(b.dataset.q || b.textContent, { origin: "Example" });
   }));
 
   function setBusy(state) {

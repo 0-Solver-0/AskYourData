@@ -51,7 +51,9 @@
 }
 
 * { box-sizing: border-box; }
-html, body { height: 100%; }
+/* Seul html prend la hauteur de l'écran : si body était limité à 100 %, la barre du haut (sticky)
+   ne restait collée que sur la première hauteur d'écran et disparaissait en faisant défiler. */
+html { height: 100%; }
 
 body {
   margin: 0;
@@ -88,8 +90,12 @@ body:not(.is-empty) .top {
   background: color-mix(in srgb, var(--bg) 82%, transparent);
   backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
 }
-.wordmark { font-weight: 700; font-size: 19px; letter-spacing: -0.02em; color: var(--ink); text-decoration: none; }
-.wordmark span { color: var(--action); }
+.wordmark {
+  display: inline-flex; align-items: center; gap: 10px; flex: 0 0 auto;
+  font-weight: 700; font-size: 19px; letter-spacing: -0.02em; color: var(--ink); text-decoration: none;
+}
+.wordmark img { display: block; width: 32px; height: 32px; }
+.wordmark-text span { color: var(--action); }
 .top-right { display: flex; align-items: center; gap: 14px; min-width: 0; }
 .source { color: var(--muted); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .source strong { color: var(--ink); font-weight: 600; }
@@ -114,10 +120,12 @@ body:not(.is-empty) .welcome { display: none; }
 .welcome { text-align: center; padding-bottom: 4px; }
 .welcome h1 {
   margin: 0; font-weight: 500; letter-spacing: -0.03em; line-height: 1.12;
-  font-size: clamp(30px, 5vw, 46px);
+  font-size: clamp(28px, 4.6vw, 42px); text-wrap: balance;
 }
+/* « Hello. » seul sur la première ligne, un peu plus grand ; la question sur la deuxième */
 .welcome .hello {
-  font-weight: 600;
+  display: block; width: fit-content; margin: 0 auto 6px;
+  font-size: 1.25em; font-weight: 600;
   background: linear-gradient(90deg, var(--action), var(--action-soft));
   -webkit-background-clip: text; background-clip: text; color: transparent;
 }
@@ -267,6 +275,18 @@ body:not(.is-empty) .dock {
   padding: 8px 14px; font-size: 14px; cursor: pointer; color: var(--ink);
 }
 .examples button:hover { border-color: var(--action); color: var(--action-text); }
+/* Niveau des questions testées : simple (pêche), moyen (orange clair), complexe (orange) */
+.examples button[data-level] { display: inline-flex; align-items: center; gap: 8px; padding-left: 6px; }
+.examples .level {
+  flex: 0 0 auto; border-radius: var(--radius-pill); padding: 2px 8px;
+  font-size: 11px; font-weight: 600; letter-spacing: 0.02em; text-transform: uppercase;
+}
+.examples [data-level="simple"] .level { background: var(--peach); color: #7a3300; }
+.examples [data-level="medium"] .level { background: var(--action-soft); color: #ffffff; }
+.examples [data-level="complex"] .level { background: var(--action); color: #ffffff; }
+.examples [data-level="simple"] { border-color: var(--peach); }
+.examples [data-level="medium"] { border-color: color-mix(in srgb, var(--action-soft) 55%, var(--line)); }
+.examples [data-level="complex"] { border-color: color-mix(in srgb, var(--action) 45%, var(--line)); }
 body:not(.is-empty) .examples:not(.open) { display: none; }
 
 .fineprint { margin: 0; font-size: 12px; color: var(--muted); text-align: center; max-width: 60ch; }
@@ -323,3 +343,4 @@ body.needs-key .composer, body.needs-key .examples, body.needs-key .voice-state 
   font-size: 13px; white-space: nowrap; color: var(--action-text); background: var(--you-bg);
   border-radius: var(--radius-pill); padding: 3px 10px;
 }
+.remaining strong { font-weight: 700; font-variant-numeric: tabular-nums; }

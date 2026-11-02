@@ -10,11 +10,15 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="icon" type="image/svg+xml" href="/static/v2/ayda-logo.svg">
   <link rel="stylesheet" href="/static/v2/style.css">
 </head>
 <body class="is-empty">
   <header class="top">
-    <a class="wordmark" href="/" title="AYDA — Ask Your DAta">A<span>Y</span>DA</a>
+    <a class="wordmark" href="/" title="AYDA — Ask Your DAta">
+      <img src="/static/v2/ayda-logo.svg" alt="" width="32" height="32">
+      <span class="wordmark-text">A<span>Ÿ</span>DA</span>
+    </a>
     <div class="top-right">
       <span class="source" id="source" aria-live="polite">Connecting…</span>
       <span class="remaining" id="remaining" hidden></span>
@@ -63,12 +67,18 @@
       </button>
     </form>
     <p class="voice-state" id="voice-state" aria-live="polite" hidden></p>
-    <div id="examples" class="examples" aria-label="Example questions">
-      <button type="button">Top 10 products by sales revenue this year</button>
-      <button type="button">Overdue vendor bills by vendor</button>
-      <button type="button">Stock value by product category</button>
-      <button type="button">Leads created this month by source</button>
-      <button type="button">Employees by job position and manager</button>
+    <!-- Questions déjà testées : niveau affiché en clair (pas seulement en couleur) ; un clic compte dans le quota -->
+    <div id="examples" class="examples" aria-label="Tested questions">
+      <button type="button" data-level="simple" data-q="Quotations sent but not yet confirmed"><span class="level">Simple</span>Quotations sent but not yet confirmed</button>
+      <button type="button" data-level="simple" data-q="Purchase orders not yet fully received"><span class="level">Simple</span>Purchase orders not yet fully received</button>
+      <button type="button" data-level="simple" data-q="Ordered quantity by product this year"><span class="level">Simple</span>Ordered quantity by product this year</button>
+      <button type="button" data-level="medium" data-q="Top 10 products by sales revenue this year"><span class="level">Medium</span>Top 10 products by sales revenue this year</button>
+      <button type="button" data-level="medium" data-q="Overdue vendor bills by vendor"><span class="level">Medium</span>Overdue vendor bills by vendor</button>
+      <button type="button" data-level="medium" data-q="Employees by job position and manager"><span class="level">Medium</span>Employees by job position and manager</button>
+      <button type="button" data-level="medium" data-q="Revenue des commandes de l'année"><span class="level">Medium</span>Revenue des commandes de l'année</button>
+      <button type="button" data-level="complex" data-q="Stock value by product category"><span class="level">Complex</span>Stock value by product category</button>
+      <button type="button" data-level="complex" data-q="Average order value per sales team this year"><span class="level">Complex</span>Average order value per sales team this year</button>
+      <button type="button" data-level="complex" data-q="What is the least profitable product?"><span class="level">Complex</span>What is the least profitable product?</button>
     </div>
     <p class="fineprint">Answers come only from your database. When the data is not there, AYDA says what is missing.</p>
   </footer>
