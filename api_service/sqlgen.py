@@ -26,6 +26,24 @@ PROMPT_PATH = os.path.join(os.path.dirname(__file__), "..", "prompts", "sql_gene
 MAX_TOKENS = 6000            # requête + raisonnement
 
 
+# « Employees by job position and manager » : des regroupements sans mesure se lisaient tantôt
+# « compter par groupe », tantôt « lister les fiches triées ». Sauf si la question demande une liste,
+# on fixe la lecture : une ligne par groupe, avec le nombre de fiches et, pour des documents qui portent
+# un montant (paiements, factures, commandes), la somme du montant (« Payments … by journal » → total).
+LIST_WORDS = re.compile(r"\b(list|lists|listing|names?|each|every|all)\b", re.I)
+
+
+def grouping_reading(question: str, pieces: dict) -> Optional[str]:
+    """Consigne ajoutée quand le découpage regroupe sans rien mesurer (question sans « liste »)."""
+    group_by = pieces.get("group_by") or []
+    if not group_by or pieces.get("measures") or LIST_WORDS.search(question or ""):
+        return None
+    subject = pieces.get("subject") or "record"
+    return (f"Grouped by {', '.join(group_by)} with no measure: return one row per group, not the list of "
+            f"records: the number of {subject} records (COUNT) and, when these records carry an amount "
+            f"(payments, invoices, bills, orders), the sum of their main amount for the question.")
+
+
 def build_user_message(question: str, structured: Optional[dict], schema_ddl: str,
                        previous: Optional[dict] = None, assumption: Optional[str] = None,
                        original: Optional[str] = None) -> str:
@@ -39,6 +57,9 @@ def build_user_message(question: str, structured: Optional[dict], schema_ddl: st
         parts.append(f"As the user typed or said it (may contain speech-to-text errors): {original.strip()}")
     if assumption:
         parts.append(f"Reading chosen for the user (follow it): {assumption.strip()}")
+    grouping = grouping_reading(question, pieces)
+    if grouping:
+        parts.append(grouping)
     parts += ["Breakdown: " + json.dumps(pieces, ensure_ascii=False),
               "Schema:\n" + schema_ddl.strip()]
     if previous and previous.get("missing"):
