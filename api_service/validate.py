@@ -6,7 +6,7 @@ Vérification du SQL écrit par le modèle, avant toute exécution (code, sans a
     check = validate_sql(sql, schema_ddl)
     check["ok"]     → True si la requête peut être exécutée
     check["error"]  → message précis, renvoyé tel quel au modèle SQL pour correction
-    check["sql"]    → requête à exécuter (LIMIT ajouté si absent)
+    check["sql"]    → requête à exécuter (LIMIT ajouté si absent, NULLS LAST sur les tris décroissants)
 
 Règles :
 - une seule instruction, SELECT ou WITH … SELECT ; aucune écriture, nulle part (CTE compris),
@@ -14,7 +14,9 @@ Règles :
 - uniquement les tables du schéma envoyé (jamais pg_catalog, information_schema…) ;
 - uniquement les colonnes du schéma envoyé (résolution des alias et des CTE par sqlglot) ;
 - jamais de colonne sensible (mots de passe, secrets, jetons) ni de SELECT * ;
-- LIMIT ajouté à la fin si la requête n'en a pas.
+- LIMIT ajouté à la fin si la requête n'en a pas ;
+- tri décroissant : NULLS LAST ajouté (PostgreSQL met les valeurs vides en tête d'un tri DESC ;
+  un produit sans coût ne doit pas sortir premier d'un classement). Aucun chiffre ne change.
 
 Défense en profondeur : l'exécution se fait de toute façon avec un rôle PostgreSQL en lecture
 seule, dans une transaction en lecture seule, avec un délai maximal (api_service/executor.py).
@@ -142,11 +144,43 @@ def validate_sql(sql: str, schema_ddl: str, max_rows: int = MAX_ROWS) -> dict:
     except OptimizeError as exc:
         return _fail(f"{exc}; use only the columns listed in the schema", sql)
     except Exception as exc:  # noqa: BLE001 — limite de sqlglot : la base vérifiera les colonnes
-        return {"ok": True, "sql": _with_limit(sql, tree, max_rows), "error": None, "parsed": True,
-                "tables": sorted(tables), "warning": f"colonnes non vérifiées par sqlglot : {exc}"}
+        return {"ok": True, "sql": _with_limit(nulls_last(sql, tree), tree, max_rows), "error": None,
+                "parsed": True, "tables": sorted(tables), "warning": f"colonnes non vérifiées par sqlglot : {exc}"}
 
-    return {"ok": True, "sql": _with_limit(sql, tree, max_rows), "error": None, "parsed": True,
+    return {"ok": True, "sql": _with_limit(nulls_last(sql, tree), tree, max_rows), "error": None, "parsed": True,
             "tables": sorted(tables)}
+
+
+_QUOTED = re.compile(r"'(?:[^']|'')*'|\"(?:[^\"]|\"\")*\"")
+_DESC = re.compile(r"\bDESC\b(?!\s+NULLS\b)", re.I)
+
+
+def nulls_last(sql: str, tree: Optional[exp.Expression]) -> str:
+    """
+    « ORDER BY … DESC » → « DESC NULLS LAST », hors chaînes et identifiants entre guillemets.
+    Le texte du modèle est gardé tel quel, seul ce suffixe est inséré ; rien si la requête choisit
+    déjà l'ordre des valeurs vides (NULLS FIRST / NULLS LAST écrit), si elle n'a pas de tri décroissant,
+    ou si le résultat ne se relit pas comme la même requête.
+    """
+    if tree is None or re.search(r"\bNULLS\s+(FIRST|LAST)\b", sql, re.I):
+        return sql
+    if not any(o.args.get("desc") for o in tree.find_all(exp.Ordered)):
+        return sql
+    parts, pos = [], 0
+    for m in _QUOTED.finditer(sql):
+        parts.append(_DESC.sub("DESC NULLS LAST", sql[pos:m.start()]))
+        parts.append(m.group(0))
+        pos = m.end()
+    parts.append(_DESC.sub("DESC NULLS LAST", sql[pos:]))
+    out = "".join(parts)
+    try:
+        again = sqlglot.parse_one(out, read="postgres")
+    except ParseError:
+        return sql
+    ordered = [o for o in again.find_all(exp.Ordered) if o.args.get("desc")]
+    if len(ordered) != sum(1 for o in tree.find_all(exp.Ordered) if o.args.get("desc")):
+        return sql
+    return out
 
 
 def _with_limit(sql: str, tree: Optional[exp.Expression], max_rows: int) -> str:
