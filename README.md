@@ -19,15 +19,14 @@ AŸDA lets a sales, finance or operations manager ask *"What is the least profit
 
 ## Meta models
 
-Every model AŸDA calls at run time is a Meta model.
+Every model AŸDA calls at run time is a Meta model, each with a clear role in the flow of a question.
 
-| Role | Model | Where it runs | Backup |
-|---|---|---|---|
-| Understand the question (rewrite in English, split into subject, measures, filters, grouping, period, order) | Muse Spark Open Weights (`muse-spark-open-1026`) | Baseten | Muse Spark 1.3 |
-| Judge, only when two candidate tables are too close | Muse Spark Open Weights | Baseten | Muse Spark 1.3 |
-| Write the SQL | Muse Spark 1.3 | Meta API | Muse Spark Open Weights |
-| Voice to text | Muse Voice Transcribe | Meta API | none |
-| Schema search (embeddings) | DRAMA (`facebook/drama-base`) | locally, on CPU | none |
+| Step | Model | Role | Where it runs | Backup |
+|---|---|---|---|---|
+| 1 | Muse Voice Transcribe | Turns a spoken question into text | Meta API | none |
+| 2 | Muse Spark Open Weights (`muse-spark-open-1026`) | **Structures** the question: rewrites it in clear English (French and Darija included) and splits it into subject, measures, filters, grouping, period, order. **Arbitrates** when two candidate tables are too close to call | Baseten | Muse Spark 1.3 |
+| 3 | DRAMA (`facebook/drama-base`) | Searches an index of the Odoo schema, enriched with business labels, synonyms and notes for each table and column, so that only a handful of tables reach the SQL model. Runs one more targeted search when data is missing | locally, on CPU | none |
+| 4 | Muse Spark 1.3 | Writes the SQL from the question and the reduced schema. Says what is missing instead of inventing it, writes the query again once the search has added it, and corrects it from the exact database error | Meta API | Muse Spark Open Weights |
 
 Answers are read aloud by the browser's built-in voice (not a model: the Meta API has no text-to-speech).
 
@@ -37,7 +36,7 @@ Answers are read aloud by the browser's built-in voice (not a model: the Meta AP
 
 1. The browser sends the question (or the audio, turned into text by Muse Voice Transcribe) to the AŸDA API.
 2. Muse Spark Open Weights understands the question and splits it into business pieces.
-3. DRAMA searches an enriched map of the Odoo schema (business labels, synonyms, notes) and keeps only a handful of tables.
+3. DRAMA searches the enriched index of the Odoo schema and keeps only a handful of tables. If two tables are too close, Muse Spark Open Weights arbitrates.
 4. Muse Spark 1.3 writes the SQL. If a column is missing, it says what it needs instead of guessing; one more search adds it, and it tries again.
 5. The query is checked, then run with a read-only role on the live Odoo database.
 6. A template writes the summary from the rows. The browser shows the table and "How this answer was built".
