@@ -14,7 +14,7 @@ In most companies, every report or KPI check goes through a developer or a data 
 
 AŸDA lets a sales, finance or operations manager ask *"What is the least profitable product?"* in English, French or Moroccan Darija. It finds the few tables that matter among hundreds, writes one read-only SQL query, runs it on the live database and answers, with a full trace of how the answer was built.
 
-- **Demo video:** *link to come*
+- **Demo video:** https://www.youtube.com/watch?v=QbzLRpgGxh4
 - **Live demo:** available to the judges with a personal access key.
 
 ## Meta models
